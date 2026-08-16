@@ -1,8 +1,7 @@
 /**
- * ENGINE.JS - Intégration Supabase & Synchronisation dynamique.
+ * ENGINE.JS - Intégration Supabase, Auth & Multi-utilisateurs.
  */
 
-// Configuration Supabase
 const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_jriiHfQgiudht4X5zzIQNA_Bqiox33y';
 
@@ -18,6 +17,9 @@ const DAYS_MAP = [
   { key: 'SUN', label: 'D' }
 ];
 
+let currentUser = null;
+let selectedHistoryDate = null; // null = Aujourd'hui
+
 let globalState = {
   groups: [],
   tasks: [],
@@ -25,8 +27,40 @@ let globalState = {
   logs: {}
 };
 
-// Initialisation globale depuis Supabase
+// Vérification de session Auth Supabase
+async function initAuth(onAuthChange) {
+  const { data: { session } } = await _supabase.auth.getSession();
+  currentUser = session?.user || null;
+
+  _supabase.auth.onAuthStateChange((_event, session) => {
+    currentUser = session?.user || null;
+    if (onAuthChange) onAuthChange(currentUser);
+  });
+
+  return currentUser;
+}
+
+async function signUpUser(email, password) {
+  const { data, error } = await _supabase.auth.signUp({ email, password });
+  if (error) throw error;
+  return data;
+}
+
+async function signInUser(email, password) {
+  const { data, error } = await _supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  return data;
+}
+
+async function signOutUser() {
+  await _supabase.auth.signOut();
+  currentUser = null;
+  globalState = { groups: [], tasks: [], goals: [], logs: {} };
+}
+
+// Initialisation globale depuis Supabase pour l'utilisateur courant
 async function initApp() {
+  if (!currentUser) return;
   await fetchStateFromSupabase();
   renderUI();
 }
@@ -35,18 +69,19 @@ function loadState() {
   return globalState;
 }
 
-// Chargement complet des données Supabase dans l'état global
+// Chargement complet des données Supabase
 async function fetchStateFromSupabase() {
+  if (!currentUser) return;
+
   try {
     const [gRes, tRes, goalRes, sgRes, lRes] = await Promise.all([
-      _supabase.from('groups').select('*'),
-      _supabase.from('tasks').select('*'),
-      _supabase.from('goals').select('*'),
-      _supabase.from('sub_goals').select('*'),
-      _supabase.from('logs').select('*')
+      _supabase.from('groups').select('*').eq('user_id', currentUser.id),
+      _supabase.from('tasks').select('*').eq('user_id', currentUser.id),
+      _supabase.from('goals').select('*').eq('user_id', currentUser.id),
+      _supabase.from('sub_goals').select('*').eq('user_id', currentUser.id),
+      _supabase.from('logs').select('*').eq('user_id', currentUser.id)
     ]);
 
-    // Initialisation par défaut si la base est vide
     if (gRes.data && gRes.data.length === 0) {
       await seedInitialData();
       return await fetchStateFromSupabase();
@@ -58,7 +93,6 @@ async function fetchStateFromSupabase() {
     const subGoalsRaw = sgRes.data || [];
     const logsRaw = lRes.data || [];
 
-    // Reconstitution de la structure Goals
     const goals = goalsRaw.map(g => {
       if (g.type === 'SCALE') {
         const subGoals = subGoalsRaw
@@ -75,14 +109,12 @@ async function fetchStateFromSupabase() {
       }
     });
 
-    // Reconstitution des logs { "YYYY-MM-DD": { "task_id": { completed, points } } }
     const logs = {};
     logsRaw.forEach(l => {
       if (!logs[l.date_str]) logs[l.date_str] = {};
       logs[l.date_str][l.task_id] = { completed: l.completed, points: l.points };
     });
 
-    // Normalisation des tâches
     const formattedTasks = tasks.map(t => ({
       id: t.id,
       title: t.title,
@@ -94,35 +126,36 @@ async function fetchStateFromSupabase() {
 
     globalState = { groups, tasks: formattedTasks, goals, logs };
   } catch (err) {
-    console.error("Erreur lors de la récupération des données Supabase :", err);
+    console.error("Erreur Supabase :", err);
   }
 }
 
-// Données par défaut envoyées lors du premier lancement
 async function seedInitialData() {
-  const gId = 'g_career';
-  const goalId = 'goal_1';
-  const sgId = 'sg_demo_1';
-  const tId = 't_demo_1';
+  if (!currentUser) return;
+  const gId = 'g_' + Date.now();
+  const goalId = 'goal_' + Date.now();
+  const sgId = 'sg_' + Date.now();
+  const tId = 't_' + Date.now();
 
-  await _supabase.from('groups').insert([{ id: gId, name: 'Carrière & Compétences', icon: '🚀', weight: 3 }]);
-  await _supabase.from('goals').insert([{ id: goalId, title: 'Devenir Analyste Data', type: 'SCALE', group_id: gId }]);
-  await _supabase.from('sub_goals').insert([{ id: sgId, goal_id: goalId, title: 'Étape 1 : Fondations SQL' }]);
-  await _supabase.from('tasks').insert([{ id: tId, title: 'Pratique SQL 45 min', points: 30, group_id: gId, goal_id: goalId, sub_goal_id: sgId, days: ['MON', 'TUE', 'WED', 'THU', 'FRI'] }]);
+  await _supabase.from('groups').insert([{ id: gId, name: 'Carrière & Compétences', icon: '🚀', weight: 3, user_id: currentUser.id }]);
+  await _supabase.from('goals').insert([{ id: goalId, title: 'Mon Premier Objectif', type: 'SCALE', group_id: gId, user_id: currentUser.id }]);
+  await _supabase.from('sub_goals').insert([{ id: sgId, goal_id: goalId, title: 'Étape 1', user_id: currentUser.id }]);
+  await _supabase.from('tasks').insert([{ id: tId, title: 'Ma première tâche', points: 30, group_id: gId, goal_id: goalId, sub_goal_id: sgId, days: ['MON', 'TUE', 'WED', 'THU', 'FRI'], user_id: currentUser.id }]);
 }
 
 function getTodayString() {
-  return new Date().toISOString().split('T')[0];
+  return selectedHistoryDate || new Date().toISOString().split('T')[0];
 }
 
 function getTodayDayKey() {
-  const dayIndex = new Date().getDay();
+  const dateObj = selectedHistoryDate ? new Date(selectedHistoryDate) : new Date();
+  const dayIndex = dateObj.getDay();
   const keys = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
   return keys[dayIndex];
 }
 
 function getCurrentWeekDates() {
-  const curr = new Date();
+  const curr = selectedHistoryDate ? new Date(selectedHistoryDate) : new Date();
   const first = curr.getDate() - (curr.getDay() === 0 ? 6 : curr.getDay() - 1);
   const dates = [];
 
@@ -176,8 +209,9 @@ function calculateGlobalScores(mode = 'daily') {
   };
 }
 
-// BASCULE DE COCHAGE DE TÂCHE
+// BASCIULE DE COCHAGE DE TÂCHE
 async function toggleTaskLog(taskId, dateStr = getTodayString()) {
+  if (!currentUser) return;
   const st = loadState();
   if (!st.logs[dateStr]) st.logs[dateStr] = {};
 
@@ -186,46 +220,57 @@ async function toggleTaskLog(taskId, dateStr = getTodayString()) {
 
   if (st.logs[dateStr][taskId]?.completed) {
     delete st.logs[dateStr][taskId];
-    await _supabase.from('logs').delete().eq('date_str', dateStr).eq('task_id', taskId);
+    await _supabase.from('logs').delete().eq('date_str', dateStr).eq('task_id', taskId).eq('user_id', currentUser.id);
   } else {
     const pts = parseInt(task.points) || 10;
     st.logs[dateStr][taskId] = { completed: true, points: pts };
-    await _supabase.from('logs').upsert({ date_str: dateStr, task_id: taskId, points: pts, completed: true }, { onConflict: 'date_str,task_id' });
+    await _supabase.from('logs').upsert({ 
+      date_str: dateStr, 
+      task_id: taskId, 
+      points: pts, 
+      completed: true, 
+      user_id: currentUser.id 
+    }, { onConflict: 'user_id,date_str,task_id' });
   }
 }
 
 // GESTION DES GROUPES
 async function addGroup(name, icon, weight = 1) {
+  if (!currentUser) return;
   const id = 'g_' + Date.now();
   const newGroup = { id, name, icon: icon || '📁', weight: parseInt(weight) || 1 };
   globalState.groups.push(newGroup);
-  await _supabase.from('groups').insert([{ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 }]);
+  await _supabase.from('groups').insert([{ id, name, icon: icon || '📁', weight: parseInt(weight) || 1, user_id: currentUser.id }]);
 }
 
 async function deleteGroup(groupId) {
+  if (!currentUser) return;
   globalState.groups = globalState.groups.filter(g => g.id !== groupId);
   globalState.tasks = globalState.tasks.filter(t => t.groupId !== groupId);
-  await _supabase.from('groups').delete().eq('id', groupId);
+  await _supabase.from('groups').delete().eq('id', groupId).eq('user_id', currentUser.id);
 }
 
 async function updateGroupWeight(groupId, newWeight) {
+  if (!currentUser) return;
   const weight = Math.max(1, parseInt(newWeight) || 1);
   const group = globalState.groups.find(g => g.id === groupId);
   if (group) group.weight = weight;
-  await _supabase.from('groups').update({ weight }).eq('id', groupId);
+  await _supabase.from('groups').update({ weight }).eq('id', groupId).eq('user_id', currentUser.id);
 }
 
 // GESTION DES TÂCHES
 async function addStandaloneTask(title, points, groupId, daysArray) {
+  if (!currentUser) return;
   const id = 'task_' + Date.now();
   const days = daysArray || ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
   const pts = parseInt(points) || 10;
 
   globalState.tasks.push({ id, title, points: pts, groupId, days });
-  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days }]);
+  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days, user_id: currentUser.id }]);
 }
 
 async function deleteTask(taskId) {
+  if (!currentUser) return;
   globalState.tasks = globalState.tasks.filter(t => t.id !== taskId);
   globalState.goals.forEach(goal => {
     if (goal.directTaskIds) goal.directTaskIds = goal.directTaskIds.filter(id => id !== taskId);
@@ -233,10 +278,11 @@ async function deleteTask(taskId) {
       goal.subGoals.forEach(sg => sg.taskIds = sg.taskIds.filter(id => id !== taskId));
     }
   });
-  await _supabase.from('tasks').delete().eq('id', taskId);
+  await _supabase.from('tasks').delete().eq('id', taskId).eq('user_id', currentUser.id);
 }
 
 async function updateTask(taskId, newTitle, newPoints, newDays) {
+  if (!currentUser) return;
   const pts = parseInt(newPoints) || 10;
   const task = globalState.tasks.find(t => t.id === taskId);
   if (task) {
@@ -244,22 +290,23 @@ async function updateTask(taskId, newTitle, newPoints, newDays) {
     task.points = pts;
     task.days = newDays;
   }
-  await _supabase.from('tasks').update({ title: newTitle, points: pts, days: newDays }).eq('id', taskId);
+  await _supabase.from('tasks').update({ title: newTitle, points: pts, days: newDays }).eq('id', taskId).eq('user_id', currentUser.id);
 }
 
-// GESTION DES OBJECTIFS (JALONS / DIRECTS)
+// GESTION DES OBJECTIFS
 async function addComplexGoal(title, type, groupId, structuredData) {
+  if (!currentUser) return;
   const goalId = 'goal_' + Date.now();
   const newGoal = { id: goalId, title, type, groupId };
 
-  await _supabase.from('goals').insert([{ id: goalId, title, type, group_id: groupId }]);
+  await _supabase.from('goals').insert([{ id: goalId, title, type, group_id: groupId, user_id: currentUser.id }]);
 
   if (type === 'SCALE') {
     newGoal.subGoals = [];
     for (let sIndex = 0; sIndex < structuredData.length; sIndex++) {
       const sg = structuredData[sIndex];
       const subGoalId = `sg_${goalId}_${sIndex}`;
-      await _supabase.from('sub_goals').insert([{ id: subGoalId, goal_id: goalId, title: sg.title }]);
+      await _supabase.from('sub_goals').insert([{ id: subGoalId, goal_id: goalId, title: sg.title, user_id: currentUser.id }]);
 
       const taskIds = [];
       for (let tIndex = 0; tIndex < sg.tasks.length; tIndex++) {
@@ -269,7 +316,7 @@ async function addComplexGoal(title, type, groupId, structuredData) {
 
         globalState.tasks.push({ id: taskId, title: t.title, points: pts, groupId, days: t.days, goalId });
         await _supabase.from('tasks').insert([{
-          id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, sub_goal_id: subGoalId, days: t.days
+          id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, sub_goal_id: subGoalId, days: t.days, user_id: currentUser.id
         }]);
         taskIds.push(taskId);
       }
@@ -284,7 +331,7 @@ async function addComplexGoal(title, type, groupId, structuredData) {
 
       globalState.tasks.push({ id: taskId, title: t.title, points: pts, groupId, days: t.days, goalId });
       await _supabase.from('tasks').insert([{
-        id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, days: t.days
+        id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, days: t.days, user_id: currentUser.id
       }]);
       newGoal.directTaskIds.push(taskId);
     }
@@ -294,7 +341,8 @@ async function addComplexGoal(title, type, groupId, structuredData) {
 }
 
 async function deleteGoal(goalId) {
+  if (!currentUser) return;
   globalState.goals = globalState.goals.filter(g => g.id !== goalId);
   globalState.tasks = globalState.tasks.filter(t => t.goalId !== goalId);
-  await _supabase.from('goals').delete().eq('id', goalId);
+  await _supabase.from('goals').delete().eq('id', goalId).eq('user_id', currentUser.id);
 }
