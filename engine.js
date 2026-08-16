@@ -1,5 +1,5 @@
 /**
- * ENGINE.JS - Intégration Supabase, Auth & Multi-utilisateurs.
+ * ENGINE.JS - Intégration Supabase, Auth Simplifiée & Multi-utilisateurs.
  */
 
 const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
@@ -37,6 +37,52 @@ function getLocalDateString() {
   return `${year}-${month}-${day}`;
 }
 
+// Générateur d'email interne invisible pour adapter Supabase au mode Nom + Mot de passe
+function usernameToEmail(username) {
+  const cleanUsername = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+  return `${cleanUsername}@app.local`;
+}
+
+// Inscription directe avec Nom d'utilisateur + Mot de passe
+async function signUpUser(username, password) {
+  const email = usernameToEmail(username);
+  
+  const { data, error } = await _supabase.auth.signUp({
+    email: email,
+    password: password,
+    options: {
+      data: { username: username.trim() }
+    }
+  });
+
+  if (error) {
+    if (error.message.includes("User already registered")) {
+      throw new Error("Ce nom d'utilisateur est déjà pris. Veuillez en choisir un autre.");
+    }
+    throw error;
+  }
+
+  return data;
+}
+
+// Connexion directe avec Nom d'utilisateur + Mot de passe
+async function signInUser(username, password) {
+  const email = usernameToEmail(username);
+  const { data, error } = await _supabase.auth.signInWithPassword({
+    email: email,
+    password: password
+  });
+
+  if (error) {
+    if (error.message.includes("Invalid login credentials")) {
+      throw new Error("Nom d'utilisateur ou mot de passe incorrect.");
+    }
+    throw error;
+  }
+
+  return data;
+}
+
 // Vérification de session Auth Supabase
 async function initAuth(onAuthChange) {
   const { data: { session } } = await _supabase.auth.getSession();
@@ -48,7 +94,7 @@ async function initAuth(onAuthChange) {
   });
 
   // Détecteur de changement de jour (passé minuit ou reprise d'activité)
-  setInterval(checkDayChange, 30000); // Vérifie toutes les 30 sec
+  setInterval(checkDayChange, 30000);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       checkDayChange();
@@ -68,18 +114,6 @@ function checkDayChange() {
       renderUI();
     }
   }
-}
-
-async function signUpUser(email, password) {
-  const { data, error } = await _supabase.auth.signUp({ email, password });
-  if (error) throw error;
-  return data;
-}
-
-async function signInUser(email, password) {
-  const { data, error } = await _supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-  return data;
 }
 
 async function signOutUser() {
@@ -180,7 +214,6 @@ function getTodayString() {
 function getTodayDayKey() {
   const dateStr = getTodayString();
   const parts = dateStr.split('-');
-  // Construction avec l'année, le mois (0-indexed) et le jour exact
   const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
   const dayIndex = dateObj.getDay();
   const keys = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
@@ -245,7 +278,7 @@ function calculateGlobalScores(mode = 'daily') {
 
   return {
     raw: { earned: totalRawEarned, expected: totalRawExpected, pct: rawPct },
-    weighted: { earned: totalWeightedEarned, expected: totalWeightedEarned, pct: weightedPct }
+    weighted: { earned: totalWeightedEarned, expected: totalWeightedExpected, pct: weightedPct }
   };
 }
 
