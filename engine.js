@@ -18,7 +18,8 @@ const DAYS_MAP = [
 ];
 
 let currentUser = null;
-let selectedHistoryDate = null; // null = Aujourd'hui
+let selectedHistoryDate = null; // null = Toujours la date système du jour
+let lastKnownLocalDate = getLocalDateString();
 
 let globalState = {
   groups: [],
@@ -26,6 +27,15 @@ let globalState = {
   goals: [],
   logs: {}
 };
+
+// Fonction utilitaire pour obtenir la date locale exacte au format YYYY-MM-DD
+function getLocalDateString() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 // Vérification de session Auth Supabase
 async function initAuth(onAuthChange) {
@@ -37,7 +47,27 @@ async function initAuth(onAuthChange) {
     if (onAuthChange) onAuthChange(currentUser);
   });
 
+  // Détecteur de changement de jour (passé minuit ou reprise d'activité)
+  setInterval(checkDayChange, 30000); // Vérifie toutes les 30 sec
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      checkDayChange();
+    }
+  });
+
   return currentUser;
+}
+
+function checkDayChange() {
+  const currentToday = getLocalDateString();
+  if (currentToday !== lastKnownLocalDate) {
+    lastKnownLocalDate = currentToday;
+    if (selectedHistoryDate === null) {
+      const picker = document.getElementById('history-date-picker');
+      if (picker) picker.value = currentToday;
+      renderUI();
+    }
+  }
 }
 
 async function signUpUser(email, password) {
@@ -144,25 +174,34 @@ async function seedInitialData() {
 }
 
 function getTodayString() {
-  return selectedHistoryDate || new Date().toISOString().split('T')[0];
+  return selectedHistoryDate || getLocalDateString();
 }
 
 function getTodayDayKey() {
-  const dateObj = selectedHistoryDate ? new Date(selectedHistoryDate) : new Date();
+  const dateStr = getTodayString();
+  const parts = dateStr.split('-');
+  // Construction avec l'année, le mois (0-indexed) et le jour exact
+  const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
   const dayIndex = dateObj.getDay();
   const keys = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
   return keys[dayIndex];
 }
 
 function getCurrentWeekDates() {
-  const curr = selectedHistoryDate ? new Date(selectedHistoryDate) : new Date();
+  const dateStr = getTodayString();
+  const parts = dateStr.split('-');
+  const curr = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  
   const first = curr.getDate() - (curr.getDay() === 0 ? 6 : curr.getDay() - 1);
   const dates = [];
 
   for (let i = 0; i < 7; i++) {
     const next = new Date(curr);
     next.setDate(first + i);
-    dates.push(next.toISOString().split('T')[0]);
+    const y = next.getFullYear();
+    const m = String(next.getMonth() + 1).padStart(2, '0');
+    const d = String(next.getDate()).padStart(2, '0');
+    dates.push(`${y}-${m}-${d}`);
   }
   return dates;
 }
@@ -177,7 +216,8 @@ function calculateGlobalScores(mode = 'daily') {
   let totalWeightedEarned = 0;
 
   datesToEvaluate.forEach(dateStr => {
-    const dayDate = new Date(dateStr);
+    const parts = dateStr.split('-');
+    const dayDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
     const dayKeys = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
     const currentDayKey = dayKeys[dayDate.getDay()];
     const logs = st.logs[dateStr] || {};
@@ -209,7 +249,7 @@ function calculateGlobalScores(mode = 'daily') {
   };
 }
 
-// BASCIULE DE COCHAGE DE TÂCHE
+// BASCULE DE COCHAGE DE TÂCHE
 async function toggleTaskLog(taskId, dateStr = getTodayString()) {
   if (!currentUser) return;
   const st = loadState();
