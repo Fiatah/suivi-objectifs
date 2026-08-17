@@ -1,5 +1,5 @@
 /**
- * ENGINE.JS - Intégration Supabase, Auth Simplifiée & Multi-utilisateurs.
+ * ENGINE.JS - Version Directe Sans Authentification
  */
 
 const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
@@ -17,7 +17,6 @@ const DAYS_MAP = [
   { key: 'SUN', label: 'D' }
 ];
 
-let currentUser = null;
 let selectedHistoryDate = null; // null = Toujours la date système du jour
 let lastKnownLocalDate = getLocalDateString();
 
@@ -37,61 +36,9 @@ function getLocalDateString() {
   return `${year}-${month}-${day}`;
 }
 
-// Générateur d'email interne invisible pour adapter Supabase au mode Nom + Mot de passe
-function usernameToEmail(username) {
-  const cleanUsername = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-  return `${cleanUsername}@app.local`;
-}
-
-// Inscription directe avec Nom d'utilisateur + Mot de passe
-async function signUpUser(username, password) {
-  const email = usernameToEmail(username);
-  
-  const { data, error } = await _supabase.auth.signUp({
-    email: email,
-    password: password,
-    options: {
-      data: { username: username.trim() }
-    }
-  });
-
-  if (error) {
-    if (error.message.includes("User already registered")) {
-      throw new Error("Ce nom d'utilisateur est déjà pris. Veuillez en choisir un autre.");
-    }
-    throw error;
-  }
-
-  return data;
-}
-
-// Connexion directe avec Nom d'utilisateur + Mot de passe
-async function signInUser(username, password) {
-  const email = usernameToEmail(username);
-  const { data, error } = await _supabase.auth.signInWithPassword({
-    email: email,
-    password: password
-  });
-
-  if (error) {
-    if (error.message.includes("Invalid login credentials")) {
-      throw new Error("Nom d'utilisateur ou mot de passe incorrect.");
-    }
-    throw error;
-  }
-
-  return data;
-}
-
-// Vérification de session Auth Supabase
-async function initAuth(onAuthChange) {
-  const { data: { session } } = await _supabase.auth.getSession();
-  currentUser = session?.user || null;
-
-  _supabase.auth.onAuthStateChange((_event, session) => {
-    currentUser = session?.user || null;
-    if (onAuthChange) onAuthChange(currentUser);
-  });
+// Initialisation directe sans Auth
+async function initApp() {
+  await fetchStateFromSupabase();
 
   // Détecteur de changement de jour (passé minuit ou reprise d'activité)
   setInterval(checkDayChange, 30000);
@@ -101,7 +48,7 @@ async function initAuth(onAuthChange) {
     }
   });
 
-  return currentUser;
+  renderUI();
 }
 
 function checkDayChange() {
@@ -116,34 +63,19 @@ function checkDayChange() {
   }
 }
 
-async function signOutUser() {
-  await _supabase.auth.signOut();
-  currentUser = null;
-  globalState = { groups: [], tasks: [], goals: [], logs: {} };
-}
-
-// Initialisation globale depuis Supabase pour l'utilisateur courant
-async function initApp() {
-  if (!currentUser) return;
-  await fetchStateFromSupabase();
-  renderUI();
-}
-
 function loadState() {
   return globalState;
 }
 
-// Chargement complet des données Supabase
+// Chargement complet des données depuis Supabase
 async function fetchStateFromSupabase() {
-  if (!currentUser) return;
-
   try {
     const [gRes, tRes, goalRes, sgRes, lRes] = await Promise.all([
-      _supabase.from('groups').select('*').eq('user_id', currentUser.id),
-      _supabase.from('tasks').select('*').eq('user_id', currentUser.id),
-      _supabase.from('goals').select('*').eq('user_id', currentUser.id),
-      _supabase.from('sub_goals').select('*').eq('user_id', currentUser.id),
-      _supabase.from('logs').select('*').eq('user_id', currentUser.id)
+      _supabase.from('groups').select('*'),
+      _supabase.from('tasks').select('*'),
+      _supabase.from('goals').select('*'),
+      _supabase.from('sub_goals').select('*'),
+      _supabase.from('logs').select('*')
     ]);
 
     if (gRes.data && gRes.data.length === 0) {
@@ -190,21 +122,20 @@ async function fetchStateFromSupabase() {
 
     globalState = { groups, tasks: formattedTasks, goals, logs };
   } catch (err) {
-    console.error("Erreur Supabase :", err);
+    console.error("Erreur de chargement Supabase :", err);
   }
 }
 
 async function seedInitialData() {
-  if (!currentUser) return;
   const gId = 'g_' + Date.now();
   const goalId = 'goal_' + Date.now();
   const sgId = 'sg_' + Date.now();
   const tId = 't_' + Date.now();
 
-  await _supabase.from('groups').insert([{ id: gId, name: 'Carrière & Compétences', icon: '🚀', weight: 3, user_id: currentUser.id }]);
-  await _supabase.from('goals').insert([{ id: goalId, title: 'Mon Premier Objectif', type: 'SCALE', group_id: gId, user_id: currentUser.id }]);
-  await _supabase.from('sub_goals').insert([{ id: sgId, goal_id: goalId, title: 'Étape 1', user_id: currentUser.id }]);
-  await _supabase.from('tasks').insert([{ id: tId, title: 'Ma première tâche', points: 30, group_id: gId, goal_id: goalId, sub_goal_id: sgId, days: ['MON', 'TUE', 'WED', 'THU', 'FRI'], user_id: currentUser.id }]);
+  await _supabase.from('groups').insert([{ id: gId, name: 'Carrière & Compétences', icon: '🚀', weight: 3 }]);
+  await _supabase.from('goals').insert([{ id: goalId, title: 'Mon Premier Objectif', type: 'SCALE', group_id: gId }]);
+  await _supabase.from('sub_goals').insert([{ id: sgId, goal_id: goalId, title: 'Étape 1' }]);
+  await _supabase.from('tasks').insert([{ id: tId, title: 'Ma première tâche', points: 30, group_id: gId, goal_id: goalId, sub_goal_id: sgId, days: ['MON', 'TUE', 'WED', 'THU', 'FRI'] }]);
 }
 
 function getTodayString() {
@@ -284,7 +215,6 @@ function calculateGlobalScores(mode = 'daily') {
 
 // BASCULE DE COCHAGE DE TÂCHE
 async function toggleTaskLog(taskId, dateStr = getTodayString()) {
-  if (!currentUser) return;
   const st = loadState();
   if (!st.logs[dateStr]) st.logs[dateStr] = {};
 
@@ -293,7 +223,7 @@ async function toggleTaskLog(taskId, dateStr = getTodayString()) {
 
   if (st.logs[dateStr][taskId]?.completed) {
     delete st.logs[dateStr][taskId];
-    await _supabase.from('logs').delete().eq('date_str', dateStr).eq('task_id', taskId).eq('user_id', currentUser.id);
+    await _supabase.from('logs').delete().eq('date_str', dateStr).eq('task_id', taskId);
   } else {
     const pts = parseInt(task.points) || 10;
     st.logs[dateStr][taskId] = { completed: true, points: pts };
@@ -301,49 +231,43 @@ async function toggleTaskLog(taskId, dateStr = getTodayString()) {
       date_str: dateStr, 
       task_id: taskId, 
       points: pts, 
-      completed: true, 
-      user_id: currentUser.id 
-    }, { onConflict: 'user_id,date_str,task_id' });
+      completed: true 
+    }, { onConflict: 'date_str,task_id' });
   }
 }
 
 // GESTION DES GROUPES
 async function addGroup(name, icon, weight = 1) {
-  if (!currentUser) return;
   const id = 'g_' + Date.now();
   const newGroup = { id, name, icon: icon || '📁', weight: parseInt(weight) || 1 };
   globalState.groups.push(newGroup);
-  await _supabase.from('groups').insert([{ id, name, icon: icon || '📁', weight: parseInt(weight) || 1, user_id: currentUser.id }]);
+  await _supabase.from('groups').insert([{ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 }]);
 }
 
 async function deleteGroup(groupId) {
-  if (!currentUser) return;
   globalState.groups = globalState.groups.filter(g => g.id !== groupId);
   globalState.tasks = globalState.tasks.filter(t => t.groupId !== groupId);
-  await _supabase.from('groups').delete().eq('id', groupId).eq('user_id', currentUser.id);
+  await _supabase.from('groups').delete().eq('id', groupId);
 }
 
 async function updateGroupWeight(groupId, newWeight) {
-  if (!currentUser) return;
   const weight = Math.max(1, parseInt(newWeight) || 1);
   const group = globalState.groups.find(g => g.id === groupId);
   if (group) group.weight = weight;
-  await _supabase.from('groups').update({ weight }).eq('id', groupId).eq('user_id', currentUser.id);
+  await _supabase.from('groups').update({ weight }).eq('id', groupId);
 }
 
 // GESTION DES TÂCHES
 async function addStandaloneTask(title, points, groupId, daysArray) {
-  if (!currentUser) return;
   const id = 'task_' + Date.now();
   const days = daysArray || ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
   const pts = parseInt(points) || 10;
 
   globalState.tasks.push({ id, title, points: pts, groupId, days });
-  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days, user_id: currentUser.id }]);
+  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days }]);
 }
 
 async function deleteTask(taskId) {
-  if (!currentUser) return;
   globalState.tasks = globalState.tasks.filter(t => t.id !== taskId);
   globalState.goals.forEach(goal => {
     if (goal.directTaskIds) goal.directTaskIds = goal.directTaskIds.filter(id => id !== taskId);
@@ -351,11 +275,10 @@ async function deleteTask(taskId) {
       goal.subGoals.forEach(sg => sg.taskIds = sg.taskIds.filter(id => id !== taskId));
     }
   });
-  await _supabase.from('tasks').delete().eq('id', taskId).eq('user_id', currentUser.id);
+  await _supabase.from('tasks').delete().eq('id', taskId);
 }
 
 async function updateTask(taskId, newTitle, newPoints, newDays) {
-  if (!currentUser) return;
   const pts = parseInt(newPoints) || 10;
   const task = globalState.tasks.find(t => t.id === taskId);
   if (task) {
@@ -363,23 +286,22 @@ async function updateTask(taskId, newTitle, newPoints, newDays) {
     task.points = pts;
     task.days = newDays;
   }
-  await _supabase.from('tasks').update({ title: newTitle, points: pts, days: newDays }).eq('id', taskId).eq('user_id', currentUser.id);
+  await _supabase.from('tasks').update({ title: newTitle, points: pts, days: newDays }).eq('id', taskId);
 }
 
 // GESTION DES OBJECTIFS
 async function addComplexGoal(title, type, groupId, structuredData) {
-  if (!currentUser) return;
   const goalId = 'goal_' + Date.now();
   const newGoal = { id: goalId, title, type, groupId };
 
-  await _supabase.from('goals').insert([{ id: goalId, title, type, group_id: groupId, user_id: currentUser.id }]);
+  await _supabase.from('goals').insert([{ id: goalId, title, type, group_id: groupId }]);
 
   if (type === 'SCALE') {
     newGoal.subGoals = [];
     for (let sIndex = 0; sIndex < structuredData.length; sIndex++) {
       const sg = structuredData[sIndex];
       const subGoalId = `sg_${goalId}_${sIndex}`;
-      await _supabase.from('sub_goals').insert([{ id: subGoalId, goal_id: goalId, title: sg.title, user_id: currentUser.id }]);
+      await _supabase.from('sub_goals').insert([{ id: subGoalId, goal_id: goalId, title: sg.title }]);
 
       const taskIds = [];
       for (let tIndex = 0; tIndex < sg.tasks.length; tIndex++) {
@@ -389,7 +311,7 @@ async function addComplexGoal(title, type, groupId, structuredData) {
 
         globalState.tasks.push({ id: taskId, title: t.title, points: pts, groupId, days: t.days, goalId });
         await _supabase.from('tasks').insert([{
-          id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, sub_goal_id: subGoalId, days: t.days, user_id: currentUser.id
+          id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, sub_goal_id: subGoalId, days: t.days
         }]);
         taskIds.push(taskId);
       }
@@ -404,7 +326,7 @@ async function addComplexGoal(title, type, groupId, structuredData) {
 
       globalState.tasks.push({ id: taskId, title: t.title, points: pts, groupId, days: t.days, goalId });
       await _supabase.from('tasks').insert([{
-        id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, days: t.days, user_id: currentUser.id
+        id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, days: t.days
       }]);
       newGoal.directTaskIds.push(taskId);
     }
@@ -414,8 +336,7 @@ async function addComplexGoal(title, type, groupId, structuredData) {
 }
 
 async function deleteGoal(goalId) {
-  if (!currentUser) return;
   globalState.goals = globalState.goals.filter(g => g.id !== goalId);
   globalState.tasks = globalState.tasks.filter(t => t.goalId !== goalId);
-  await _supabase.from('goals').delete().eq('id', goalId).eq('user_id', currentUser.id);
+  await _supabase.from('goals').delete().eq('id', goalId);
 }
