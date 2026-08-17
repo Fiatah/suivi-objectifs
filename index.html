@@ -10,42 +10,14 @@
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen p-6 font-sans">
 
-  <!-- MODAL AUTHENTIFICATION SIMPLIFIÉE -->
-  <div id="auth-container" class="max-w-md mx-auto mt-20 bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl space-y-4">
-    <h2 id="auth-title" class="text-xl font-bold text-center text-white">Connexion</h2>
-    
-    <form onsubmit="handleAuthSubmit(event)" class="space-y-3">
-      <div>
-        <label class="block text-xs font-semibold text-gray-300 mb-1">Nom d'utilisateur</label>
-        <input type="text" id="auth-username" required placeholder="Ex: Albert" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
-      </div>
-      <div>
-        <label class="block text-xs font-semibold text-gray-300 mb-1">Mot de passe</label>
-        <input type="password" id="auth-password" required placeholder="••••••••" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
-      </div>
-      
-      <p id="auth-error" class="text-xs text-red-400 hidden"></p>
-      
-      <button type="submit" id="auth-submit-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 rounded-lg text-xs transition">
-        Se Connecter
-      </button>
-    </form>
-
-    <div class="text-center pt-2">
-      <button onclick="toggleAuthMode()" id="auth-toggle-btn" class="text-xs text-blue-400 hover:underline">
-        Pas encore de compte ? S'inscrire
-      </button>
-    </div>
-  </div>
-
   <!-- APPLICATION PRINCIPALE -->
-  <div id="app-container" class="hidden max-w-6xl mx-auto space-y-6">
+  <div id="app-container" class="max-w-6xl mx-auto space-y-6">
     
     <!-- En-tête -->
     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-gray-800 pb-4 gap-4">
       <div>
         <h1 class="text-2xl font-bold text-white">Tableau de Bord & Routine</h1>
-        <p class="text-xs text-gray-400" id="user-email-label">Bienvenue</p>
+        <p class="text-xs text-gray-400">Mode Accès Direct</p>
       </div>
       
       <div class="flex flex-wrap items-center gap-3">
@@ -68,10 +40,6 @@
             📆 Vue Semaine
           </button>
         </div>
-
-        <button onclick="handleSignOut()" class="bg-red-900/40 hover:bg-red-800/60 border border-red-700 text-red-200 text-xs px-3 py-1.5 rounded transition">
-          Déconnexion
-        </button>
       </div>
     </div>
 
@@ -157,57 +125,13 @@
 
   <script src="engine.js"></script>
   <script>
-    let isSignUpMode = false;
     let currentViewMode = 'daily';
     let tempSubGoals = [];
 
     window.addEventListener('DOMContentLoaded', async () => {
       document.getElementById('history-date-picker').value = getLocalDateString();
-
-      await initAuth((user) => {
-        if (user) {
-          const displayName = user.user_metadata?.username || user.email.split('@')[0];
-          document.getElementById('auth-container').classList.add('hidden');
-          document.getElementById('app-container').classList.remove('hidden');
-          document.getElementById('user-email-label').innerText = `Connecté en tant que : ${displayName}`;
-          initApp();
-        } else {
-          document.getElementById('auth-container').classList.remove('hidden');
-          document.getElementById('app-container').classList.add('hidden');
-        }
-      });
+      await initApp();
     });
-
-    function toggleAuthMode() {
-      isSignUpMode = !isSignUpMode;
-      document.getElementById('auth-title').innerText = isSignUpMode ? "Créer un compte" : "Connexion";
-      document.getElementById('auth-submit-btn').innerText = isSignUpMode ? "S'inscrire" : "Se Connecter";
-      document.getElementById('auth-toggle-btn').innerText = isSignUpMode ? "Déjà un compte ? Se connecter" : "Pas encore de compte ? S'inscrire";
-    }
-
-    async function handleAuthSubmit(e) {
-      e.preventDefault();
-      const username = document.getElementById('auth-username').value;
-      const password = document.getElementById('auth-password').value;
-      const errEl = document.getElementById('auth-error');
-      errEl.classList.add('hidden');
-
-      try {
-        if (isSignUpMode) {
-          await signUpUser(username, password);
-          await signInUser(username, password);
-        } else {
-          await signInUser(username, password);
-        }
-      } catch (err) {
-        errEl.innerText = err.message || "Erreur d'authentification";
-        errEl.classList.remove('hidden');
-      }
-    }
-
-    async function handleSignOut() {
-      await signOutUser();
-    }
 
     function onDateChange(val) {
       if (val === getLocalDateString()) {
