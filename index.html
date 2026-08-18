@@ -444,6 +444,11 @@
         <option value="${g.id}" ${g.id === task.groupId ? 'selected' : ''}>${g.icon} ${g.name}</option>
       `).join('');
 
+      const goalOptions = `<option value="">-- Aucun (Tâche Indépendante) --</option>` + 
+        st.goals.map(g => `
+          <option value="${g.id}" ${g.id === task.goalId ? 'selected' : ''}>🎯 ${g.title}</option>
+        `).join('');
+
       const daysSelectorHtml = DAYS_MAP.map(d => {
         const isChecked = !task.days || task.days.includes(d.key);
         return `
@@ -467,6 +472,13 @@
               <select id="m-edit-task-group" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">${groupOptions}</select>
             </div>
             <div>
+              <label class="block text-xs font-semibold text-gray-300 mb-1">Rattacher à un Objectif</label>
+              <select id="m-edit-task-goal" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">${goalOptions}</select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
+            <div>
               <label class="block text-xs font-semibold text-gray-300 mb-1">Points</label>
               <select id="m-edit-task-points" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
                 <option value="10" ${task.points == 10 ? 'selected' : ''}>⚡ 10 Pts — Facile</option>
@@ -474,20 +486,18 @@
                 <option value="30" ${task.points == 30 ? 'selected' : ''}>🔥 30 Pts — Intense</option>
               </select>
             </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="block text-xs font-semibold text-gray-300 mb-1">Type d'exécution</label>
               <select id="m-edit-task-onetime" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
                 <option value="false" ${!task.isOneTime ? 'selected' : ''}>🔄 Récurrente</option>
-                <option value="true" ${task.isOneTime ? 'selected' : ''}>📌 Jalon unique (Coché = Masqué)</option>
+                <option value="true" ${task.isOneTime ? 'selected' : ''}>📌 Jalon unique</option>
               </select>
             </div>
-            <div>
-              <label class="block text-xs font-semibold text-gray-300 mb-1">Date d'échéance (Délai)</label>
-              <input type="date" id="m-edit-task-duedate" value="${task.dueDate || ''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
-            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-gray-300 mb-1">Date d'échéance (Délai)</label>
+            <input type="date" id="m-edit-task-duedate" value="${task.dueDate || ''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
           </div>
 
           <div>
@@ -501,20 +511,21 @@
         </form>
       `;
 
-      openModal(task.goalId ? "Modifier la Tâche de l'Objectif" : "Modifier la Tâche", html);
+      openModal("Modifier la Tâche", html);
     }
 
     async function handleEditTaskSubmit(e, taskId) {
       e.preventDefault();
       const title = document.getElementById('m-edit-task-title').value.trim();
       const groupId = document.getElementById('m-edit-task-group').value;
+      const goalId = document.getElementById('m-edit-task-goal').value || null;
       const points = document.getElementById('m-edit-task-points').value;
       const isOneTime = document.getElementById('m-edit-task-onetime').value === 'true';
       const dueDate = document.getElementById('m-edit-task-duedate').value;
       const selectedDays = Array.from(document.querySelectorAll('.day-checkbox-edit:checked')).map(cb => cb.value);
 
       if (title) {
-        await updateTask(taskId, title, points, groupId, selectedDays, dueDate, isOneTime);
+        await updateTask(taskId, title, points, groupId, selectedDays, dueDate, isOneTime, goalId);
         closeModal();
         renderUI();
       }
