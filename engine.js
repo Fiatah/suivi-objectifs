@@ -1,5 +1,5 @@
 /**
- * ENGINE.JS - Gestion avancée des tâches, délais, et verrouillage d'édition des objectifs
+ * ENGINE.JS - Gestion avancée des tâches, délais, et édition complète des tâches d'objectifs
  */
 
 const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
@@ -101,6 +101,7 @@ async function fetchStateFromSupabase() {
       goalId: t.goal_id || null,
       dueDate: t.due_date || null,
       isOneTime: !!t.is_one_time,
+      isFinished: !!t.is_finished, // Nouveau drapeau pour marquer la fin définitive
       days: Array.isArray(t.days) ? t.days : JSON.parse(t.days || '[]')
     }));
 
@@ -141,8 +142,9 @@ function getCurrentWeekDates() {
   return dates;
 }
 
-// Vérifier si une tâche a dépassé son délai
+// Vérifier si une tâche a dépassé son délai ou est définitivement terminée
 function isTaskExpired(task, targetDate = getTodayString()) {
+  if (task.isFinished) return true;
   if (!task.dueDate) return false;
   return targetDate > task.dueDate;
 }
@@ -173,7 +175,6 @@ function calculateGlobalScores(mode = 'daily') {
     const logs = st.logs[dateStr] || {};
 
     st.tasks.forEach(task => {
-      // Ignorer si la date limite de la tâche est dépassée
       if (isTaskExpired(task, dateStr)) return;
       if (task.isOneTime && isTaskCompletedEver(task.id, dateStr)) return;
 
@@ -216,7 +217,7 @@ function calculateGoalMetrics(goal) {
     if (goalTasks.length === 0) return { realPct: 0, timePct: null };
     let done = 0;
     goalTasks.forEach(t => {
-      if (isTaskCompletedEver(t.id)) done++;
+      if (t.isFinished || isTaskCompletedEver(t.id)) done++;
     });
     return { realPct: Math.round((done / goalTasks.length) * 100), timePct: null };
   }
@@ -277,14 +278,23 @@ async function toggleTaskLog(taskId, dateStr = getTodayString()) {
   }
 }
 
+// MARQUER UNE TÂCHE COMME DÉFINITIVEMENT TERMINÉE (NE SE RÉPÈTE PLUS)
+async function finishTaskPermanently(taskId) {
+  const task = globalState.tasks.find(t => t.id === taskId);
+  if (task) {
+    task.isFinished = true;
+    await _supabase.from('tasks').update({ is_finished: true }).eq('id', taskId);
+  }
+}
+
 // CRUD TÂCHES
 async function addStandaloneTask(title, points, groupId, daysArray, dueDate = null, goalId = null, isOneTime = false) {
   const id = 'task_' + Date.now();
   const days = daysArray || ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
   const pts = parseInt(points) || 10;
 
-  globalState.tasks.push({ id, title, points: pts, groupId, days, dueDate: dueDate || null, goalId, isOneTime });
-  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days, due_date: dueDate || null, goal_id: goalId, is_one_time: isOneTime }]);
+  globalState.tasks.push({ id, title, points: pts, groupId, days, dueDate: dueDate || null, goalId, isOneTime, isFinished: false });
+  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days, due_date: dueDate || null, goal_id: goalId, is_one_time: isOneTime, is_finished: false }]);
 }
 
 async function updateTask(taskId, newTitle, newPoints, newGroupId, newDays, newDueDate, newIsOneTime) {
@@ -292,12 +302,6 @@ async function updateTask(taskId, newTitle, newPoints, newGroupId, newDays, newD
   const task = globalState.tasks.find(t => t.id === taskId);
   
   if (task) {
-    // Interdiction de modifier une tâche d'objectif depuis la liste indépendante
-    if (task.goalId) {
-      alert("Cette tâche appartient à un objectif. Veuillez la modifier depuis l'onglet Objectifs.");
-      return;
-    }
-
     task.title = newTitle;
     task.points = pts;
     task.groupId = newGroupId;
@@ -322,7 +326,7 @@ async function deleteTask(taskId) {
 }
 
 // CRUD OBJECTIFS
-async function addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, taskPoints) {
+async function addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, taskPoints, taskDueDate = null) {
   const goalId = 'goal_' + Date.now();
   const startDate = getLocalDateString();
   const target = parseFloat(targetAmount) || 0;
@@ -353,7 +357,9 @@ async function addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, t
 
   if (taskTitle && type !== 'FREE_CONTRIBUTE') {
     const isOneTime = type === 'CHAPTERS';
-    await addStandaloneTask(taskTitle, taskPoints || 20, groupId, ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'], dueDate, goalId, isOneTime);
+    // Utiliser soit le délai spécifique de la tâche soit le délai global de l'objectif
+    const effectiveTaskDueDate = taskDueDate || dueDate || null;
+    await addStandaloneTask(taskTitle, taskPoints || 20, groupId, ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'], effectiveTaskDueDate, goalId, isOneTime);
   }
 }
 
