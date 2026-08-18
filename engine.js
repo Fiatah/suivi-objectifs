@@ -1,5 +1,5 @@
 /**
- * ENGINE.JS - Gestion avancée des tâches, délais, et édition complète des tâches d'objectifs
+ * ENGINE.JS - Moteur de données avec gestion fluide des modifications de tâches d'objectifs
  */
 
 const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
@@ -101,7 +101,7 @@ async function fetchStateFromSupabase() {
       goalId: t.goal_id || null,
       dueDate: t.due_date || null,
       isOneTime: !!t.is_one_time,
-      isFinished: !!t.is_finished, // Nouveau drapeau pour marquer la fin définitive
+      isFinished: !!t.is_finished,
       days: Array.isArray(t.days) ? t.days : JSON.parse(t.days || '[]')
     }));
 
@@ -142,7 +142,6 @@ function getCurrentWeekDates() {
   return dates;
 }
 
-// Vérifier si une tâche a dépassé son délai ou est définitivement terminée
 function isTaskExpired(task, targetDate = getTodayString()) {
   if (task.isFinished) return true;
   if (!task.dueDate) return false;
@@ -278,7 +277,6 @@ async function toggleTaskLog(taskId, dateStr = getTodayString()) {
   }
 }
 
-// MARQUER UNE TÂCHE COMME DÉFINITIVEMENT TERMINÉE (NE SE RÉPÈTE PLUS)
 async function finishTaskPermanently(taskId) {
   const task = globalState.tasks.find(t => t.id === taskId);
   if (task) {
@@ -287,7 +285,7 @@ async function finishTaskPermanently(taskId) {
   }
 }
 
-// CRUD TÂCHES
+// CRUD TÂCHES (Gestion unifiée sans blocage)
 async function addStandaloneTask(title, points, groupId, daysArray, dueDate = null, goalId = null, isOneTime = false) {
   const id = 'task_' + Date.now();
   const days = daysArray || ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
@@ -357,7 +355,6 @@ async function addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, t
 
   if (taskTitle && type !== 'FREE_CONTRIBUTE') {
     const isOneTime = type === 'CHAPTERS';
-    // Utiliser soit le délai spécifique de la tâche soit le délai global de l'objectif
     const effectiveTaskDueDate = taskDueDate || dueDate || null;
     await addStandaloneTask(taskTitle, taskPoints || 20, groupId, ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'], effectiveTaskDueDate, goalId, isOneTime);
   }
