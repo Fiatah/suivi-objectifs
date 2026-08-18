@@ -1,84 +1,490 @@
-// ==========================================
-// PERSISTANCE & ACTIONS TÂCHES (SUPABASE)
-// ==========================================
+/**
+ * ENGINE.JS - Gestion avancée des tâches, délais, et édition complète des tâches d'objectifs
+ */
 
-// 1. Mise à jour complète d'une tâche dans Supabase
-async function updateTask(taskId, title, points, groupId, days, dueDate, isOneTime, goalId = null) {
-  const payload = {
-    title: title,
-    points: parseInt(points, 10),
-    group_id: groupId,
-    days: days,
-    due_date: dueDate || null,
-    is_one_time: isOneTime,
-    goal_id: goalId || null
-  };
+const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_jriiHfQgiudht4X5zzIQNA_Bqiox33y';
 
-  // 1. Enregistrement local immédiat
-  const task = state.tasks.find(t => t.id === taskId);
-  if (task) {
-    task.title = title;
-    task.points = parseInt(points, 10);
-    task.groupId = groupId;
-    task.days = days;
-    task.dueDate = dueDate || null;
-    task.isOneTime = isOneTime;
-    task.goalId = goalId || null;
-    saveStateLocal(state);
-  }
+const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  // 2. Requête UPDATE explicite vers Supabase
-  if (supabaseClient) {
-    try {
-      const { error } = await supabaseClient
-        .from('tasks')
-        .update(payload)
-        .eq('id', taskId);
+const DAYS_MAP = [
+  { key: 'MON', label: 'L' },
+  { key: 'TUE', label: 'M' },
+  { key: 'WED', label: 'M' },
+  { key: 'THU', label: 'J' },
+  { key: 'FRI', label: 'V' },
+  { key: 'SAT', label: 'S' },
+  { key: 'SUN', label: 'D' }
+];
 
-      if (error) console.error("Erreur mise à jour Supabase (Task):", error);
-    } catch (err) {
-      console.error("Échec de connexion Supabase lors de updateTask:", err);
-    }
-  }
+let selectedHistoryDate = null;
+let lastKnownLocalDate = getLocalDateString();
 
-  // 3. Resynchronisation de l'état global
-  await syncWithSupabase();
+let globalState = {
+  groups: [],
+  tasks: [],
+  goals: [],
+  logs: {}
+};
+
+function getLocalDateString() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
-// 2. Mise à jour complète d'un objectif dans Supabase
-async function updateGoal(goalId, title, groupId, type, targetAmount, dueDate) {
-  const payload = {
-    title: title,
-    group_id: groupId,
-    type: type,
-    target_amount: targetAmount ? parseFloat(targetAmount) : null,
-    due_date: dueDate || null
-  };
+async function initApp() {
+  await fetchStateFromSupabase();
+  setInterval(checkDayChange, 30000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkDayChange();
+  });
+  renderUI();
+}
 
-  // 1. Enregistrement local
-  const goal = state.goals.find(g => g.id === goalId);
-  if (goal) {
-    goal.title = title;
-    goal.groupId = groupId;
-    goal.type = type;
-    goal.targetAmount = targetAmount ? parseFloat(targetAmount) : null;
-    goal.dueDate = dueDate || null;
-    saveStateLocal(state);
+function checkDayChange() {
+  const currentToday = getLocalDateString();
+  if (currentToday !== lastKnownLocalDate) {
+    lastKnownLocalDate = currentToday;
+    if (selectedHistoryDate === null) {
+      const picker = document.getElementById('history-date-picker');
+      if (picker) picker.value = currentToday;
+      renderUI();
+    }
+  }
+}
+
+function loadState() {
+  return globalState;
+}
+
+function saveStateToLocal() {
+  try {
+    localStorage.setItem('habit_app_data_v9', JSON.stringify(globalState));
+  } catch (e) {
+    console.warn("Impossible de sauvegarder dans le localStorage :", e);
+  }
+}
+
+// Chargement Supabase
+async function fetchStateFromSupabase() {
+  try {
+    const [gRes, tRes, goalRes, lRes] = await Promise.all([
+      _supabase.from('groups').select('*'),
+      _supabase.from('tasks').select('*'),
+      _supabase.from('goals').select('*'),
+      _supabase.from('logs').select('*')
+    ]);
+
+    const groups = gRes.data || [];
+    const tasks = tRes.data || [];
+    const goalsRaw = goalRes.data || [];
+    const logsRaw = lRes.data || [];
+
+    const goals = goalsRaw.map(g => ({
+      id: g.id,
+      title: g.title,
+      type: g.type || 'RECURRING',
+      groupId: g.group_id,
+      targetAmount: parseFloat(g.target_amount) || 0,
+      currentAmount: parseFloat(g.current_amount) || 0,
+      startDate: g.start_date || getLocalDateString(),
+      dueDate: g.due_date || null,
+      isCollapsed: true
+    }));
+
+    const logs = {};
+    logsRaw.forEach(l => {
+      if (!logs[l.date_str]) logs[l.date_str] = {};
+      logs[l.date_str][l.task_id] = { completed: l.completed, points: l.points };
+    });
+
+    const formattedTasks = tasks.map(t => {
+      let parsedDays = [];
+      if (Array.isArray(t.days)) {
+        parsedDays = t.days;
+      } else if (typeof t.days === 'string') {
+        try {
+          parsedDays = JSON.parse(t.days);
+        } catch (e) {
+          parsedDays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+        }
+      } else {
+        parsedDays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+      }
+
+      return {
+        id: t.id,
+        title: t.title,
+        points: t.points,
+        groupId: t.group_id,
+        goalId: t.goal_id || null,
+        dueDate: t.due_date || null,
+        isOneTime: !!t.is_one_time,
+        isFinished: !!t.is_finished,
+        days: parsedDays
+      };
+    });
+
+    globalState = { groups, tasks: formattedTasks, goals, logs };
+    saveStateToLocal();
+  } catch (err) {
+    console.error("Erreur de chargement Supabase, tentative depuis le LocalStorage :", err);
+    const saved = localStorage.getItem('habit_app_data_v9');
+    if (saved) {
+      try {
+        globalState = JSON.parse(saved);
+      } catch (e) {
+        console.error("Erreur de lecture du LocalStorage :", e);
+      }
+    }
+  }
+}
+
+function getTodayString() {
+  return selectedHistoryDate || getLocalDateString();
+}
+
+function getTodayDayKey() {
+  const dateStr = getTodayString();
+  const parts = dateStr.split('-');
+  const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  const dayIndex = dateObj.getDay();
+  const keys = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+  return keys[dayIndex];
+}
+
+function getCurrentWeekDates() {
+  const dateStr = getTodayString();
+  const parts = dateStr.split('-');
+  const curr = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  const first = curr.getDate() - (curr.getDay() === 0 ? 6 : curr.getDay() - 1);
+  const dates = [];
+
+  for (let i = 0; i < 7; i++) {
+    const next = new Date(curr);
+    next.setDate(first + i);
+    const y = next.getFullYear();
+    const m = String(next.getMonth() + 1).padStart(2, '0');
+    const d = String(next.getDate()).padStart(2, '0');
+    dates.push(`${y}-${m}-${d}`);
+  }
+  return dates;
+}
+
+function isTaskExpired(task, targetDate = getTodayString()) {
+  if (task.isFinished) return true;
+  if (!task.dueDate) return false;
+  return targetDate > task.dueDate;
+}
+
+function isTaskCompletedEver(taskId, beforeDate = null) {
+  const st = loadState();
+  const dates = Object.keys(st.logs);
+
+  for (let d of dates) {
+    if (beforeDate && d > beforeDate) continue;
+    if (st.logs[d]?.[taskId]?.completed) return true;
+  }
+  return false;
+}
+
+function calculateGlobalScores(mode = 'daily') {
+  const st = loadState();
+  const datesToEvaluate = mode === 'daily' ? [getTodayString()] : getCurrentWeekDates();
+
+  let totalRawExpected = 0, totalRawEarned = 0;
+  let totalWeightedExpected = 0, totalWeightedEarned = 0;
+
+  datesToEvaluate.forEach(dateStr => {
+    const parts = dateStr.split('-');
+    const dayDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    const dayKeys = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+    const currentDayKey = dayKeys[dayDate.getDay()];
+    const logs = st.logs[dateStr] || {};
+
+    st.tasks.forEach(task => {
+      if (isTaskExpired(task, dateStr)) return;
+      if (task.isOneTime && isTaskCompletedEver(task.id, dateStr)) return;
+
+      const isTaskActiveForDay = !task.days || task.days.length === 0 || task.days.includes(currentDayKey);
+      if (!isTaskActiveForDay) return;
+
+      const group = st.groups.find(g => g.id === task.groupId);
+      const weight = group ? (group.weight || 1) : 1;
+      const taskPts = parseInt(task.points) || 10;
+
+      totalRawExpected += taskPts;
+      totalWeightedExpected += (taskPts * weight);
+
+      if (logs[task.id]?.completed) {
+        totalRawEarned += taskPts;
+        totalWeightedEarned += (taskPts * weight);
+      }
+    });
+  });
+
+  const rawPct = totalRawExpected > 0 ? Math.round((totalRawEarned / totalRawExpected) * 100) : 0;
+  const weightedPct = totalWeightedExpected > 0 ? Math.round((totalWeightedEarned / totalWeightedExpected) * 100) : 0;
+
+  return {
+    raw: { earned: totalRawEarned, expected: totalRawExpected, pct: rawPct },
+    weighted: { earned: totalWeightedEarned, expected: totalWeightedEarned, pct: weightedPct }
+  };
+}
+
+function calculateGoalMetrics(goal) {
+  const st = loadState();
+  const goalTasks = st.tasks.filter(t => t.goalId === goal.id);
+
+  if (goal.type === 'FREE_CONTRIBUTE') {
+    const pct = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0;
+    return { realPct: pct, timePct: null };
   }
 
-  // 2. Enregistrement Supabase
-  if (supabaseClient) {
-    try {
-      const { error } = await supabaseClient
-        .from('goals')
-        .update(payload)
-        .eq('id', goalId);
+  if (goal.type === 'CHAPTERS') {
+    if (goalTasks.length === 0) return { realPct: 0, timePct: null };
+    let done = 0;
+    goalTasks.forEach(t => {
+      if (t.isFinished || isTaskCompletedEver(t.id)) done++;
+    });
+    return { realPct: Math.round((done / goalTasks.length) * 100), timePct: null };
+  }
 
-      if (error) console.error("Erreur mise à jour Supabase (Goal):", error);
-    } catch (err) {
-      console.error("Échec de connexion Supabase lors de updateGoal:", err);
+  let completedCount = 0;
+  Object.keys(st.logs).forEach(dStr => {
+    goalTasks.forEach(t => {
+      if (st.logs[dStr]?.[t.id]?.completed) completedCount++;
+    });
+  });
+
+  let realPct = 0;
+  if (goal.targetAmount > 0) {
+    const valPerTask = goal.targetAmount / Math.max(1, goalTasks.length * 30);
+    realPct = Math.min(100, Math.round(((completedCount * valPerTask) / goal.targetAmount) * 100));
+  } else {
+    realPct = goalTasks.length > 0 ? Math.min(100, Math.round((completedCount / (goalTasks.length * 30)) * 100)) : 0;
+  }
+
+  let timePct = null;
+  if (goal.type === 'TIMED' && goal.startDate && goal.dueDate) {
+    const start = new Date(goal.startDate).getTime();
+    const end = new Date(goal.dueDate).getTime();
+    const now = new Date(getLocalDateString()).getTime();
+
+    if (end > start) {
+      const totalDuration = end - start;
+      const elapsed = Math.max(0, now - start);
+      timePct = Math.min(100, Math.round((elapsed / totalDuration) * 100));
     }
   }
 
-  await syncWithSupabase();
+  return { realPct, timePct };
+}
+
+function toggleGoalAccordion(goalId) {
+  const goal = globalState.goals.find(g => g.id === goalId);
+  if (goal) {
+    goal.isCollapsed = !goal.isCollapsed;
+    renderUI();
+  }
+}
+
+async function toggleTaskLog(taskId, dateStr = getTodayString()) {
+  const st = loadState();
+  if (!st.logs[dateStr]) st.logs[dateStr] = {};
+
+  const task = st.tasks.find(t => t.id === taskId);
+  if (!task) return;
+
+  if (st.logs[dateStr][taskId]?.completed) {
+    delete st.logs[dateStr][taskId];
+    saveStateToLocal();
+    await _supabase.from('logs').delete().eq('date_str', dateStr).eq('task_id', taskId);
+  } else {
+    const pts = parseInt(task.points) || 10;
+    st.logs[dateStr][taskId] = { completed: true, points: pts };
+    saveStateToLocal();
+    await _supabase.from('logs').upsert({ date_str: dateStr, task_id: taskId, points: pts, completed: true }, { onConflict: 'date_str,task_id' });
+  }
+}
+
+async function finishTaskPermanently(taskId) {
+  const task = globalState.tasks.find(t => t.id === taskId);
+  if (task) {
+    task.isFinished = true;
+    saveStateToLocal();
+    await _supabase.from('tasks').update({ is_finished: true }).eq('id', taskId);
+  }
+}
+
+// CRUD TÂCHES
+async function addStandaloneTask(title, points, groupId, daysArray, dueDate = null, goalId = null, isOneTime = false) {
+  const id = 'task_' + Date.now();
+  const days = Array.isArray(daysArray) && daysArray.length > 0 ? daysArray : ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const pts = parseInt(points) || 10;
+
+  globalState.tasks.push({ id, title, points: pts, groupId, days, dueDate: dueDate || null, goalId, isOneTime, isFinished: false });
+  saveStateToLocal();
+
+  try {
+    await _supabase.from('tasks').insert([{
+      id,
+      title,
+      points: pts,
+      group_id: groupId,
+      days: days,
+      due_date: dueDate || null,
+      goal_id: goalId,
+      is_one_time: isOneTime,
+      is_finished: false
+    }]);
+  } catch (err) {
+    console.error("Erreur lors de l'insertion Supabase :", err);
+  }
+}
+
+async function updateTask(taskId, newTitle, newPoints, newGroupId, newDays, newDueDate, newIsOneTime) {
+  const pts = parseInt(newPoints) || 10;
+  const task = globalState.tasks.find(t => t.id === taskId);
+  
+  const daysFormatted = Array.isArray(newDays) && newDays.length > 0 ? newDays : ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
+  if (task) {
+    task.title = newTitle;
+    task.points = pts;
+    task.groupId = newGroupId;
+    task.days = daysFormatted;
+    task.dueDate = newDueDate || null;
+    task.isOneTime = !!newIsOneTime;
+  }
+
+  saveStateToLocal();
+
+  try {
+    const { error } = await _supabase.from('tasks').update({
+      title: newTitle,
+      points: pts,
+      group_id: newGroupId,
+      days: daysFormatted,
+      due_date: newDueDate || null,
+      is_one_time: !!newIsOneTime
+    }).eq('id', taskId);
+
+    if (error) {
+      console.error("Erreur Supabase à la mise à jour de la tâche :", error.message);
+    }
+  } catch (err) {
+    console.error("Erreur réseau/Supabase lors de la mise à jour :", err);
+  }
+}
+
+async function deleteTask(taskId) {
+  globalState.tasks = globalState.tasks.filter(t => t.id !== taskId);
+  saveStateToLocal();
+  await _supabase.from('tasks').delete().eq('id', taskId);
+}
+
+// CRUD OBJECTIFS
+async function addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, taskPoints, taskDueDate = null) {
+  const goalId = 'goal_' + Date.now();
+  const startDate = getLocalDateString();
+  const target = parseFloat(targetAmount) || 0;
+
+  const newGoal = {
+    id: goalId,
+    title,
+    type,
+    groupId,
+    targetAmount: target,
+    currentAmount: 0,
+    startDate,
+    dueDate: dueDate || null,
+    isCollapsed: false
+  };
+
+  globalState.goals.push(newGoal);
+  saveStateToLocal();
+
+  await _supabase.from('goals').insert([{
+    id: goalId,
+    title,
+    type,
+    group_id: groupId,
+    target_amount: target,
+    current_amount: 0,
+    start_date: startDate,
+    due_date: dueDate || null
+  }]);
+
+  if (taskTitle && type !== 'FREE_CONTRIBUTE') {
+    const isOneTime = type === 'CHAPTERS';
+    const effectiveTaskDueDate = taskDueDate || dueDate || null;
+    await addStandaloneTask(taskTitle, taskPoints || 20, groupId, ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'], effectiveTaskDueDate, goalId, isOneTime);
+  }
+}
+
+async function updateGoal(goalId, newTitle, newGroupId, newType, newTargetAmount, newDueDate) {
+  const goal = globalState.goals.find(g => g.id === goalId);
+  if (!goal) return;
+
+  const oldGroupId = goal.groupId;
+  goal.title = newTitle;
+  goal.groupId = newGroupId;
+  goal.type = newType;
+  goal.targetAmount = parseFloat(newTargetAmount) || 0;
+  goal.dueDate = newDueDate || null;
+
+  saveStateToLocal();
+
+  await _supabase.from('goals').update({
+    title: newTitle,
+    group_id: newGroupId,
+    type: newType,
+    target_amount: parseFloat(newTargetAmount) || 0,
+    due_date: newDueDate || null
+  }).eq('id', goalId);
+
+  if (oldGroupId !== newGroupId) {
+    globalState.tasks.forEach(t => {
+      if (t.goalId === goalId) {
+        t.groupId = newGroupId;
+      }
+    });
+    saveStateToLocal();
+    await _supabase.from('tasks').update({ group_id: newGroupId }).eq('goal_id', goalId);
+  }
+}
+
+async function deleteGoal(goalId) {
+  globalState.goals = globalState.goals.filter(g => g.id !== goalId);
+  globalState.tasks = globalState.tasks.filter(t => t.goalId !== goalId);
+  saveStateToLocal();
+  await _supabase.from('goals').delete().eq('id', goalId);
+}
+
+// GROUPES
+async function addGroup(name, icon, weight = 1) {
+  const id = 'g_' + Date.now();
+  globalState.groups.push({ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 });
+  saveStateToLocal();
+  await _supabase.from('groups').insert([{ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 }]);
+}
+
+async function deleteGroup(groupId) {
+  globalState.groups = globalState.groups.filter(g => g.id !== groupId);
+  globalState.tasks = globalState.tasks.filter(t => t.groupId !== groupId);
+  globalState.goals = globalState.goals.filter(g => g.groupId !== groupId);
+  saveStateToLocal();
+  await _supabase.from('groups').delete().eq('id', groupId);
+}
+
+async function updateGroupWeight(groupId, newWeight) {
+  const weight = Math.max(1, parseInt(newWeight) || 1);
+  const group = globalState.groups.find(g => g.id === groupId);
+  if (group) group.weight = weight;
+  saveStateToLocal();
+  await _supabase.from('groups').update({ weight }).eq('id', groupId);
 }
