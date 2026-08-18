@@ -136,24 +136,49 @@
     </div>
   </div>
 
+  <!-- CHARGEMENT DU MOTEUR EN JS -->
   <script src="engine.js"></script>
   <script>
     let currentViewMode = 'daily';
 
+    // Fonction de secours pour obtenir la date au format ISO
+    function getLocalDateString() {
+      const today = new Date();
+      return today.toISOString().split('T')[0];
+    }
+
     window.addEventListener('DOMContentLoaded', async () => {
-      document.getElementById('history-date-picker').value = getLocalDateString();
-      await initApp();
+      try {
+        const picker = document.getElementById('history-date-picker');
+        if (picker) {
+          picker.value = typeof getTodayString === 'function' ? getTodayString() : getLocalDateString();
+        }
+
+        if (typeof initApp === 'function') {
+          await initApp();
+        } else {
+          renderUI();
+        }
+      } catch (err) {
+        console.error("Erreur lors de l'initialisation de l'application :", err);
+        renderUI();
+      }
     });
 
     function onDateChange(val) {
-      selectedHistoryDate = (val === getLocalDateString()) ? null : (val || null);
+      if (typeof selectedHistoryDate !== 'undefined') {
+        selectedHistoryDate = (val === getLocalDateString()) ? null : (val || null);
+      }
       renderUI();
     }
 
     function resetToToday() {
       const today = getLocalDateString();
-      document.getElementById('history-date-picker').value = today;
-      selectedHistoryDate = null;
+      const picker = document.getElementById('history-date-picker');
+      if (picker) picker.value = today;
+      if (typeof selectedHistoryDate !== 'undefined') {
+        selectedHistoryDate = null;
+      }
       renderUI();
     }
 
@@ -182,274 +207,319 @@
     function updateCircleProgress(strokeId, textId, pct) {
       const circle = document.getElementById(strokeId);
       const text = document.getElementById(textId);
+      if (!circle || !text) return;
+      const validPct = isNaN(pct) ? 0 : Math.min(100, Math.max(0, pct));
       const circumference = 2 * Math.PI * 38;
-      const offset = circumference - (pct / 100) * circumference;
+      const offset = circumference - (validPct / 100) * circumference;
       circle.style.strokeDashoffset = offset;
-      text.innerText = `${pct}%`;
+      text.innerText = `${validPct}%`;
     }
 
     function renderUI() {
+      if (typeof loadState !== 'function') {
+        console.warn("loadState n'est pas accessible dans engine.js");
+        return;
+      }
+
       const st = loadState();
-      const today = getTodayString();
-      const todayDayKey = getTodayDayKey();
+      const today = typeof getTodayString === 'function' ? getTodayString() : getLocalDateString();
+      const todayDayKey = typeof getTodayDayKey === 'function' ? getTodayDayKey() : 'mon';
 
-      // Stats
-      const scores = calculateGlobalScores(currentViewMode);
-      updateCircleProgress('circle-raw-stroke', 'circle-raw-text', scores.raw.pct);
-      document.getElementById('raw-pts-label').innerText = `${scores.raw.earned} / ${scores.raw.expected} pts d'effort`;
-      updateCircleProgress('circle-weighted-stroke', 'circle-weighted-text', scores.weighted.pct);
-      document.getElementById('weighted-pts-label').innerText = `${scores.weighted.earned} / ${scores.weighted.expected} pts d'impact`;
+      // 1. MISE À JOUR DES SCOREBOARDS & CIRCLES
+      if (typeof calculateGlobalScores === 'function') {
+        const scores = calculateGlobalScores(currentViewMode);
+        updateCircleProgress('circle-raw-stroke', 'circle-raw-text', scores.raw.pct);
+        document.getElementById('raw-pts-label').innerText = `${scores.raw.earned} / ${scores.raw.expected} pts d'effort`;
+        updateCircleProgress('circle-weighted-stroke', 'circle-weighted-text', scores.weighted.pct);
+        document.getElementById('weighted-pts-label').innerText = `${scores.weighted.earned} / ${scores.weighted.expected} pts d'impact`;
+      }
 
-      // 1. RENDU GROUPES & ROUTINE
+      // 2. RENDU DU TAB GROUPES & ROUTINE
       const groupsContainer = document.getElementById('groups-container');
-      groupsContainer.innerHTML = '';
+      if (groupsContainer && st.groups) {
+        groupsContainer.innerHTML = '';
 
-      st.groups.forEach(group => {
-        const groupTasks = st.tasks.filter(t => {
-          if (t.groupId !== group.id) return false;
-          if (isTaskExpired(t, today)) return false;
-          if (t.isOneTime && isTaskCompletedEver(t.id, today) && !st.logs[today]?.[t.id]?.completed) return false;
-          if (currentViewMode === 'daily') return !t.days || t.days.length === 0 || t.days.includes(todayDayKey);
-          return true;
-        });
+        st.groups.forEach(group => {
+          const groupTasks = (st.tasks || []).filter(t => {
+            if (t.groupId !== group.id) return false;
+            if (typeof isTaskExpired === 'function' && isTaskExpired(t, today)) return false;
+            if (t.isOneTime && typeof isTaskCompletedEver === 'function' && isTaskCompletedEver(t.id, today) && !st.logs?.[today]?.[t.id]?.completed) return false;
+            if (currentViewMode === 'daily') return !t.days || t.days.length === 0 || t.days.includes(todayDayKey);
+            return true;
+          });
 
-        let tasksHtml = groupTasks.map(t => {
-          const isDone = !!st.logs[today]?.[t.id]?.completed || (t.isOneTime && isTaskCompletedEver(t.id));
-          let badgeColor = 'bg-blue-950 text-blue-300 border-blue-800';
-          if (t.points === 20) badgeColor = 'bg-yellow-950 text-yellow-300 border-yellow-800';
-          if (t.points === 30) badgeColor = 'bg-red-950 text-red-300 border-red-800';
+          let tasksHtml = groupTasks.map(t => {
+            const isDone = !!st.logs?.[today]?.[t.id]?.completed || (t.isOneTime && typeof isTaskCompletedEver === 'function' && isTaskCompletedEver(t.id));
+            let badgeColor = 'bg-blue-950 text-blue-300 border-blue-800';
+            if (t.points === 20) badgeColor = 'bg-yellow-950 text-yellow-300 border-yellow-800';
+            if (t.points === 30) badgeColor = 'bg-red-950 text-red-300 border-red-800';
 
-          return `
-            <div class="bg-gray-900/90 p-2.5 rounded-lg border border-gray-700/60 hover:border-gray-600 transition space-y-1.5 group">
-              <div class="flex items-center justify-between">
-                <label class="flex items-center space-x-2.5 cursor-pointer text-xs ${isDone ? 'line-through text-gray-500' : 'text-gray-200'}">
-                  <input type="checkbox" ${isDone ? 'checked' : ''} onclick="onToggleTask('${t.id}')" class="rounded border-gray-700 bg-gray-800 text-blue-600">
-                  <span>${t.title} ${t.isOneTime ? '<span class="text-[9px] text-amber-400 border border-amber-800 bg-amber-950/40 px-1 rounded">Jalon</span>' : ''}</span>
-                </label>
-                <div class="flex items-center space-x-1.5">
-                  <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${badgeColor}">+${t.points} pts</span>
-                  <button onclick="openEditTaskModal('${t.id}')" title="Modifier" class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white text-xs transition">✏️</button>
-                  <button onclick="onDeleteTask('${t.id}')" title="Supprimer" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-xs transition">&times;</button>
+            return `
+              <div class="bg-gray-900/90 p-2.5 rounded-lg border border-gray-700/60 hover:border-gray-600 transition space-y-1.5 group">
+                <div class="flex items-center justify-between">
+                  <label class="flex items-center space-x-2.5 cursor-pointer text-xs ${isDone ? 'line-through text-gray-500' : 'text-gray-200'}">
+                    <input type="checkbox" ${isDone ? 'checked' : ''} onclick="onToggleTask('${t.id}')" class="rounded border-gray-700 bg-gray-800 text-blue-600">
+                    <span>${t.title} ${t.isOneTime ? '<span class="text-[9px] text-amber-400 border border-amber-800 bg-amber-950/40 px-1 rounded">Jalon</span>' : ''}</span>
+                  </label>
+                  <div class="flex items-center space-x-1.5">
+                    <span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ${badgeColor}">+${t.points} pts</span>
+                    <button onclick="openEditTaskModal('${t.id}')" title="Modifier" class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white text-xs transition">✏️</button>
+                    <button onclick="onDeleteTask('${t.id}')" title="Supprimer" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-xs transition">&times;</button>
+                  </div>
                 </div>
+              </div>
+            `;
+          }).join('');
+
+          if (groupTasks.length === 0) {
+            tasksHtml = `<p class="text-[11px] text-gray-500 italic py-2">Aucune tâche active aujourd'hui.</p>`;
+          }
+
+          groupsContainer.innerHTML += `
+            <div class="bg-gray-800 border border-gray-700 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
+              <div>
+                <div class="flex items-center justify-between border-b border-gray-700/60 pb-2 mb-3">
+                  <div class="flex items-center space-x-2">
+                    <span>${group.icon || '📂'}</span>
+                    <h3 class="font-bold text-white text-xs tracking-wide">${group.name}</h3>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-[10px] font-semibold px-2 py-0.5 rounded bg-purple-900/40 text-purple-300 border border-purple-700">Coeff. ×${group.weight || 1}</span>
+                    <button onclick="onDeleteGroup('${group.id}')" class="text-gray-500 hover:text-red-400 text-xs transition">🗑️</button>
+                  </div>
+                </div>
+                <div class="space-y-2">${tasksHtml}</div>
+              </div>
+
+              <button onclick="openAddTaskModal('${group.id}', '${group.name}')" class="w-full mt-2 bg-gray-900/60 hover:bg-gray-700 border border-dashed border-gray-700 text-gray-400 hover:text-white py-1.5 rounded-lg text-xs font-medium transition flex items-center justify-center space-x-1">
+                <span>➕ Ajouter une tâche</span>
+              </button>
+            </div>
+          `;
+        });
+      }
+
+      // 3. RENDU DU TAB OBJECTIFS
+      const goalsContainer = document.getElementById('goals-list-container');
+      if (goalsContainer && st.goals) {
+        goalsContainer.innerHTML = '';
+
+        if (st.goals.length === 0) {
+          goalsContainer.innerHTML = `<p class="text-xs text-gray-500 italic">Aucun objectif créé pour le moment.</p>`;
+        }
+
+        st.goals.forEach(goal => {
+          const group = (st.groups || []).find(g => g.id === goal.groupId);
+          const groupLabel = group ? `${group.icon || ''} ${group.name}` : 'Groupe non défini';
+          const metrics = typeof calculateGoalMetrics === 'function' ? calculateGoalMetrics(goal) : { realPct: 0 };
+          const goalTasks = (st.tasks || []).filter(t => t.goalId === goal.id);
+
+          let typeLabel = '⚡ Récurrence / Habitude';
+          if (goal.type === 'CHAPTERS') typeLabel = '📚 Étapes & Chapitres';
+          if (goal.type === 'DAILY_FIXED') typeLabel = '💰 Cumulatif Fixe';
+          if (goal.type === 'FREE_CONTRIBUTE') typeLabel = '📈 Contribution Libre';
+          if (goal.type === 'TIMED') typeLabel = '⏱️ Chronométré';
+
+          let accordionTasksHtml = goalTasks.map(t => {
+            const isDone = t.isFinished || (typeof isTaskCompletedEver === 'function' && isTaskCompletedEver(t.id));
+            const isExpired = typeof isTaskExpired === 'function' && isTaskExpired(t, today);
+
+            return `
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-900/70 p-2.5 rounded border border-gray-800 text-xs gap-2">
+                <div class="space-y-0.5">
+                  <div class="flex items-center space-x-2">
+                    <span class="${isDone ? 'line-through text-gray-500' : 'text-gray-200'} font-medium">${t.title}</span>
+                    <span class="text-[10px] text-yellow-400 border border-yellow-800/60 bg-yellow-950/30 px-1 rounded">+${t.points} pts</span>
+                  </div>
+                  <div class="flex items-center space-x-2 text-[10px] text-gray-400">
+                    ${t.dueDate ? `<span class="${isExpired ? 'text-red-400 font-bold' : ''}">Délai : ${t.dueDate}</span>` : '<span>Sans délai</span>'}
+                    <span>•</span>
+                    <span>${t.isFinished ? '✅ Clôturée' : (isDone ? '⏳ Réalisée' : '🔄 En cours')}</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center space-x-1.5 self-end sm:self-center">
+                  ${!t.isFinished ? `
+                    <button onclick="onFinishGoalTask('${t.id}')" title="Marquer comme définitivement terminée" class="text-[10px] bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 px-2 py-1 rounded transition">
+                      ✅ Terminer
+                    </button>
+                  ` : ''}
+                  <button onclick="openEditTaskModal('${t.id}')" title="Modifier directement cette tâche" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded border border-gray-700 transition">
+                    ✏️ Modifier
+                  </button>
+                  <button onclick="onDeleteTask('${t.id}')" title="Supprimer la tâche" class="text-[10px] text-gray-500 hover:text-red-400 px-1 py-1 transition">
+                    🗑️
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('');
+
+          if (goalTasks.length === 0) {
+            accordionTasksHtml = `<p class="text-[11px] text-gray-500 italic">Aucune tâche rattachée à cet objectif.</p>`;
+          }
+
+          const isCollapsed = goal.isCollapsed !== false;
+
+          goalsContainer.innerHTML += `
+            <div class="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4 shadow-md">
+              <div class="flex justify-between items-start border-b border-gray-700 pb-3">
+                <div class="flex items-start space-x-3">
+                  <button onclick="toggleGoalAccordion('${goal.id}')" class="mt-1 text-gray-400 hover:text-white bg-gray-900 hover:bg-gray-700 p-1.5 rounded transition">
+                    ${isCollapsed ? '▼' : '▲'}
+                  </button>
+                  <div>
+                    <div class="flex items-center space-x-2">
+                      <span class="text-[10px] font-bold uppercase tracking-wider text-purple-400 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/60">${typeLabel}</span>
+                      <span class="text-[10px] text-gray-400 bg-gray-900 px-2 py-0.5 rounded border border-gray-700">📂 ${groupLabel}</span>
+                    </div>
+                    <h3 class="text-base font-bold text-white mt-1">${goal.title}</h3>
+                  </div>
+                </div>
+
+                <div class="flex items-center space-x-2">
+                  <button onclick="openEditGoalModal('${goal.id}')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2.5 py-1 rounded transition">✏️ Modifier Objectif</button>
+                  <button onclick="onDeleteGoal('${goal.id}')" class="text-xs text-gray-500 hover:text-red-400 transition">🗑️</button>
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <div class="flex justify-between items-center text-xs">
+                  <span class="text-gray-300 font-semibold">Progression globale</span>
+                  <span class="text-blue-400 font-bold text-sm">${metrics.realPct}%</span>
+                </div>
+                <div class="relative w-full bg-gray-900 h-4 rounded-full overflow-hidden border border-gray-700 shadow-inner">
+                  <div class="bg-blue-500 h-full transition-all duration-500" style="width: ${metrics.realPct}%"></div>
+                </div>
+              </div>
+
+              <div class="${isCollapsed ? 'hidden' : 'block'} bg-gray-900/40 p-3 rounded-lg border border-gray-700/50 space-y-2 mt-3">
+                <div class="flex justify-between items-center border-b border-gray-800 pb-1.5">
+                  <span class="text-xs font-bold text-gray-300">📋 Tâches & Étapes de l'objectif (${goalTasks.length})</span>
+                  <button onclick="openAddTaskModal('${goal.groupId}', '${groupLabel}', '${goal.id}')" class="text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded transition">+ Ajouter une tâche/étape</button>
+                </div>
+                <div class="space-y-1.5">${accordionTasksHtml}</div>
               </div>
             </div>
           `;
-        }).join('');
-
-        if (groupTasks.length === 0) {
-          tasksHtml = `<p class="text-[11px] text-gray-500 italic py-2">Aucune tâche active aujourd'hui.</p>`;
-        }
-
-        groupsContainer.innerHTML += `
-          <div class="bg-gray-800 border border-gray-700 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
-            <div>
-              <div class="flex items-center justify-between border-b border-gray-700/60 pb-2 mb-3">
-                <div class="flex items-center space-x-2">
-                  <span>${group.icon}</span>
-                  <h3 class="font-bold text-white text-xs tracking-wide">${group.name}</h3>
-                </div>
-                <div class="flex items-center space-x-2">
-                  <span class="text-[10px] font-semibold px-2 py-0.5 rounded bg-purple-900/40 text-purple-300 border border-purple-700">Coeff. ×${group.weight || 1}</span>
-                  <button onclick="onDeleteGroup('${group.id}')" class="text-gray-500 hover:text-red-400 text-xs transition">🗑️</button>
-                </div>
-              </div>
-              <div class="space-y-2">${tasksHtml}</div>
-            </div>
-
-            <button onclick="openAddTaskModal('${group.id}', '${group.name}')" class="w-full mt-2 bg-gray-900/60 hover:bg-gray-700 border border-dashed border-gray-700 text-gray-400 hover:text-white py-1.5 rounded-lg text-xs font-medium transition flex items-center justify-center space-x-1">
-              <span>➕ Ajouter une tâche</span>
-            </button>
-          </div>
-        `;
-      });
-
-      // 2. RENDU OBJECTIFS
-      const goalsContainer = document.getElementById('goals-list-container');
-      goalsContainer.innerHTML = '';
-
-      if (st.goals.length === 0) {
-        goalsContainer.innerHTML = `<p class="text-xs text-gray-500 italic">Aucun objectif créé pour le moment.</p>`;
+        });
       }
 
-      st.goals.forEach(goal => {
-        const group = st.groups.find(g => g.id === goal.groupId);
-        const groupLabel = group ? `${group.icon} ${group.name}` : 'Groupe non défini';
-        const metrics = calculateGoalMetrics(goal);
-        const goalTasks = st.tasks.filter(t => t.goalId === goal.id);
+      // 4. RENDU ONGLET "TOUTES LES TÂCHES"
+      const allTasksList = document.getElementById('all-tasks-list');
+      if (allTasksList && st.tasks) {
+        allTasksList.innerHTML = '';
 
-        let typeLabel = '⚡ Récurrence / Habitude';
-        if (goal.type === 'CHAPTERS') typeLabel = '📚 Étapes & Chapitres';
-        if (goal.type === 'DAILY_FIXED') typeLabel = '💰 Cumulatif Fixe';
-        if (goal.type === 'FREE_CONTRIBUTE') typeLabel = '📈 Contribution Libre';
-        if (goal.type === 'TIMED') typeLabel = '⏱️ Chronométré';
+        if (st.tasks.length === 0) {
+          allTasksList.innerHTML = `<p class="p-4 text-xs text-gray-500 italic text-center">Aucune tâche enregistrée dans le système.</p>`;
+        }
 
-        let accordionTasksHtml = goalTasks.map(t => {
-          const isDone = t.isFinished || isTaskCompletedEver(t.id);
-          const isExpired = isTaskExpired(t, today);
+        st.tasks.forEach(t => {
+          const group = (st.groups || []).find(g => g.id === t.groupId);
+          const groupName = group ? `${group.icon || ''} ${group.name}` : 'Sans groupe';
+          const goal = (st.goals || []).find(g => g.id === t.goalId);
+          const expired = typeof isTaskExpired === 'function' && isTaskExpired(t, today);
 
-          return `
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-900/70 p-2.5 rounded border border-gray-800 text-xs gap-2">
-              <div class="space-y-0.5">
+          let statusBadge = expired 
+            ? `<span class="text-[10px] bg-red-950 text-red-400 border border-red-800 px-2 py-0.5 rounded">${t.isFinished ? 'Terminée' : 'Échue (' + t.dueDate + ')'}</span>`
+            : (t.dueDate ? `<span class="text-[10px] bg-blue-950 text-blue-300 border border-blue-800 px-2 py-0.5 rounded">Jusqu'au ${t.dueDate}</span>` : `<span class="text-[10px] bg-gray-900 text-gray-400 border border-gray-700 px-2 py-0.5 rounded">Sans date limite</span>`);
+
+          let sourceBadge = goal 
+            ? `<span class="text-[10px] bg-purple-950 text-purple-300 border border-purple-800 px-2 py-0.5 rounded">🎯 Objectif: ${goal.title}</span>`
+            : `<span class="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded">📌 Tâche Indépendante</span>`;
+
+          allTasksList.innerHTML += `
+            <div class="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-gray-800/50 transition">
+              <div class="space-y-1">
                 <div class="flex items-center space-x-2">
-                  <span class="${isDone ? 'line-through text-gray-500' : 'text-gray-200'} font-medium">${t.title}</span>
-                  <span class="text-[10px] text-yellow-400 border border-yellow-800/60 bg-yellow-950/30 px-1 rounded">+${t.points} pts</span>
+                  <h4 class="font-bold text-sm text-white ${expired ? 'line-through text-gray-500' : ''}">${t.title}</h4>
+                  <span class="text-[10px] font-bold text-yellow-400 px-1.5 py-0.2 rounded border border-yellow-800 bg-yellow-950/40">+${t.points} pts</span>
                 </div>
-                <div class="flex items-center space-x-2 text-[10px] text-gray-400">
-                  ${t.dueDate ? `<span class="${isExpired ? 'text-red-400 font-bold' : ''}">Délai : ${t.dueDate}</span>` : '<span>Sans délai</span>'}
+                <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                  <span>📂 ${groupName}</span>
                   <span>•</span>
-                  <span>${t.isFinished ? '✅ Clôturée' : (isDone ? '⏳ Réalisée' : '🔄 En cours')}</span>
+                  ${sourceBadge}
+                  <span>•</span>
+                  ${statusBadge}
                 </div>
               </div>
 
-              <div class="flex items-center space-x-1.5 self-end sm:self-center">
-                ${!t.isFinished ? `
-                  <button onclick="onFinishGoalTask('${t.id}')" title="Marquer comme définitivement terminée" class="text-[10px] bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 px-2 py-1 rounded transition">
-                    ✅ Terminer
-                  </button>
-                ` : ''}
-                <button onclick="openEditTaskModal('${t.id}')" title="Modifier directement cette tâche" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded border border-gray-700 transition">
+              <div class="flex items-center space-x-2">
+                <button onclick="openEditTaskModal('${t.id}')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition">
                   ✏️ Modifier
                 </button>
-                <button onclick="onDeleteTask('${t.id}')" title="Supprimer la tâche" class="text-[10px] text-gray-500 hover:text-red-400 px-1 py-1 transition">
-                  🗑️
-                </button>
+                <button onclick="onDeleteTask('${t.id}')" class="text-xs text-gray-500 hover:text-red-400 p-1.5 transition">🗑️</button>
               </div>
             </div>
           `;
-        }).join('');
-
-        if (goalTasks.length === 0) {
-          accordionTasksHtml = `<p class="text-[11px] text-gray-500 italic">Aucune tâche rattachée à cet objectif.</p>`;
-        }
-
-        const isCollapsed = goal.isCollapsed !== false;
-
-        goalsContainer.innerHTML += `
-          <div class="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4 shadow-md">
-            <div class="flex justify-between items-start border-b border-gray-700 pb-3">
-              <div class="flex items-start space-x-3">
-                <button onclick="toggleGoalAccordion('${goal.id}')" class="mt-1 text-gray-400 hover:text-white bg-gray-900 hover:bg-gray-700 p-1.5 rounded transition">
-                  ${isCollapsed ? '▼' : '▲'}
-                </button>
-                <div>
-                  <div class="flex items-center space-x-2">
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-purple-400 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/60">${typeLabel}</span>
-                    <span class="text-[10px] text-gray-400 bg-gray-900 px-2 py-0.5 rounded border border-gray-700">📂 ${groupLabel}</span>
-                  </div>
-                  <h3 class="text-base font-bold text-white mt-1">${goal.title}</h3>
-                </div>
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <button onclick="openEditGoalModal('${goal.id}')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2.5 py-1 rounded transition">✏️ Modifier Objectif</button>
-                <button onclick="onDeleteGoal('${goal.id}')" class="text-xs text-gray-500 hover:text-red-400 transition">🗑️</button>
-              </div>
-            </div>
-
-            <div class="space-y-1.5">
-              <div class="flex justify-between items-center text-xs">
-                <span class="text-gray-300 font-semibold">Progression globale</span>
-                <span class="text-blue-400 font-bold text-sm">${metrics.realPct}%</span>
-              </div>
-              <div class="relative w-full bg-gray-900 h-4 rounded-full overflow-hidden border border-gray-700 shadow-inner">
-                <div class="bg-blue-500 h-full transition-all duration-500" style="width: ${metrics.realPct}%"></div>
-              </div>
-            </div>
-
-            <div class="${isCollapsed ? 'hidden' : 'block'} bg-gray-900/40 p-3 rounded-lg border border-gray-700/50 space-y-2 mt-3">
-              <div class="flex justify-between items-center border-b border-gray-800 pb-1.5">
-                <span class="text-xs font-bold text-gray-300">📋 Tâches & Étapes de l'objectif (${goalTasks.length})</span>
-                <button onclick="openAddTaskModal('${goal.groupId}', '${groupLabel}', '${goal.id}')" class="text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded transition">+ Ajouter une tâche/étape</button>
-              </div>
-              <div class="space-y-1.5">${accordionTasksHtml}</div>
-            </div>
-          </div>
-        `;
-      });
-
-      // 3. RENDU ONGLET "TOUTES LES TÂCHES"
-      const allTasksList = document.getElementById('all-tasks-list');
-      allTasksList.innerHTML = '';
-
-      if (st.tasks.length === 0) {
-        allTasksList.innerHTML = `<p class="p-4 text-xs text-gray-500 italic text-center">Aucune tâche enregistrée dans le système.</p>`;
+        });
       }
-
-      st.tasks.forEach(t => {
-        const group = st.groups.find(g => g.id === t.groupId);
-        const groupName = group ? `${group.icon} ${group.name}` : 'Sans groupe';
-        const goal = st.goals.find(g => g.id === t.goalId);
-        const expired = isTaskExpired(t, today);
-
-        let statusBadge = expired 
-          ? `<span class="text-[10px] bg-red-950 text-red-400 border border-red-800 px-2 py-0.5 rounded">${t.isFinished ? 'Terminée' : 'Échue (' + t.dueDate + ')'}</span>`
-          : (t.dueDate ? `<span class="text-[10px] bg-blue-950 text-blue-300 border border-blue-800 px-2 py-0.5 rounded">Jusqu'au ${t.dueDate}</span>` : `<span class="text-[10px] bg-gray-900 text-gray-400 border border-gray-700 px-2 py-0.5 rounded">Sans date limite</span>`);
-
-        let sourceBadge = goal 
-          ? `<span class="text-[10px] bg-purple-950 text-purple-300 border border-purple-800 px-2 py-0.5 rounded">🎯 Objectif: ${goal.title}</span>`
-          : `<span class="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded">📌 Tâche Indépendante</span>`;
-
-        allTasksList.innerHTML += `
-          <div class="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-gray-800/50 transition">
-            <div class="space-y-1">
-              <div class="flex items-center space-x-2">
-                <h4 class="font-bold text-sm text-white ${expired ? 'line-through text-gray-500' : ''}">${t.title}</h4>
-                <span class="text-[10px] font-bold text-yellow-400 px-1.5 py-0.2 rounded border border-yellow-800 bg-yellow-950/40">+${t.points} pts</span>
-              </div>
-              <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400">
-                <span>📂 ${groupName}</span>
-                <span>•</span>
-                ${sourceBadge}
-                <span>•</span>
-                ${statusBadge}
-              </div>
-            </div>
-
-            <div class="flex items-center space-x-2">
-              <button onclick="openEditTaskModal('${t.id}')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition">
-                ✏️ Modifier
-              </button>
-              <button onclick="onDeleteTask('${t.id}')" class="text-xs text-gray-500 hover:text-red-400 p-1.5 transition">🗑️</button>
-            </div>
-          </div>
-        `;
-      });
     }
 
-    // GESTION ASYNCHRONE SECURISEE DU COCHAGE/DECOCHAGE
-    async function onToggleTask(taskId, dateStr = getTodayString()) {
-      await toggleTaskLog(taskId, dateStr);
+    // HANDLERS ASYNCHRONES SÉCURISÉS
+    async function onToggleTask(taskId, dateStr) {
+      const today = typeof getTodayString === 'function' ? getTodayString() : getLocalDateString();
+      if (typeof toggleTaskLog === 'function') {
+        await toggleTaskLog(taskId, dateStr || today);
+      }
       renderUI();
     }
 
-    async function onDeleteTask(taskId) { await deleteTask(taskId); renderUI(); }
-    async function onDeleteGroup(groupId) { if (confirm("Supprimer ce groupe ?")) { await deleteGroup(groupId); renderUI(); } }
-    async function onDeleteGoal(goalId) { if (confirm("Supprimer cet objectif ?")) { await deleteGoal(goalId); renderUI(); } }
-    async function onFinishGoalTask(taskId) { await finishTaskPermanently(taskId); renderUI(); }
+    async function onDeleteTask(taskId) {
+      if (typeof deleteTask === 'function') await deleteTask(taskId);
+      renderUI();
+    }
 
+    async function onDeleteGroup(groupId) {
+      if (confirm("Supprimer ce groupe ?")) {
+        if (typeof deleteGroup === 'function') await deleteGroup(groupId);
+        renderUI();
+      }
+    }
+
+    async function onDeleteGoal(goalId) {
+      if (confirm("Supprimer cet objectif ?")) {
+        if (typeof deleteGoal === 'function') await deleteGoal(goalId);
+        renderUI();
+      }
+    }
+
+    async function onFinishGoalTask(taskId) {
+      if (typeof finishTaskPermanently === 'function') await finishTaskPermanently(taskId);
+      renderUI();
+    }
+
+    // MODALES & FORMULAIRES
     function openModal(title, html) {
       document.getElementById('modal-title').innerText = title;
       document.getElementById('modal-content').innerHTML = html;
       document.getElementById('modal-backdrop').classList.remove('hidden');
     }
 
-    function closeModal() { document.getElementById('modal-backdrop').classList.add('hidden'); }
+    function closeModal() {
+      document.getElementById('modal-backdrop').classList.add('hidden');
+    }
 
     function openEditTaskModal(taskId) {
       const st = loadState();
-      const task = st.tasks.find(t => t.id === taskId);
+      const task = (st.tasks || []).find(t => t.id === taskId);
       if (!task) return;
 
-      const groupOptions = st.groups.map(g => `
-        <option value="${g.id}" ${g.id === task.groupId ? 'selected' : ''}>${g.icon} ${g.name}</option>
+      const groupOptions = (st.groups || []).map(g => `
+        <option value="${g.id}" ${g.id === task.groupId ? 'selected' : ''}>${g.icon || ''} ${g.name}</option>
       `).join('');
 
       const goalOptions = `<option value="">-- Aucun (Tâche Indépendante) --</option>` + 
-        st.goals.map(g => `
+        (st.goals || []).map(g => `
           <option value="${g.id}" ${g.id === task.goalId ? 'selected' : ''}>🎯 ${g.title}</option>
         `).join('');
 
-      const daysSelectorHtml = DAYS_MAP.map(d => {
+      const daysList = (typeof DAYS_MAP !== 'undefined') ? DAYS_MAP : [
+        { key: 'mon', label: 'Lun' }, { key: 'tue', label: 'Mar' }, { key: 'wed', label: 'Mer' },
+        { key: 'thu', label: 'Jeu' }, { key: 'fri', label: 'Ven' }, { key: 'sat', label: 'Sam' }, { key: 'sun', label: 'Dim' }
+      ];
+
+      const daysSelectorHtml = daysList.map(d => {
         const isChecked = !task.days || task.days.includes(d.key);
         return `
           <label class="flex flex-col items-center cursor-pointer">
@@ -524,7 +594,10 @@
       const dueDate = document.getElementById('m-edit-task-duedate').value;
       const selectedDays = Array.from(document.querySelectorAll('.day-checkbox-edit:checked')).map(cb => cb.value);
 
-      if (title) {
+      if (title && typeof updateTask === 'function') {
+        const btn = e.target.querySelector('button[type="submit"]');
+        if (btn) { btn.disabled = true; btn.innerText = "Sauvegarde..."; }
+        
         await updateTask(taskId, title, points, groupId, selectedDays, dueDate, isOneTime, goalId);
         closeModal();
         renderUI();
@@ -533,7 +606,7 @@
 
     function openStandaloneTaskModal() {
       const st = loadState();
-      if (st.groups.length === 0) {
+      if (!st.groups || st.groups.length === 0) {
         alert("Veuillez d'abord créer au moins un groupe.");
         return;
       }
@@ -541,7 +614,12 @@
     }
 
     function openAddTaskModal(groupId, groupName, goalId = null) {
-      const daysSelectorHtml = DAYS_MAP.map(d => `
+      const daysList = (typeof DAYS_MAP !== 'undefined') ? DAYS_MAP : [
+        { key: 'mon', label: 'Lun' }, { key: 'tue', label: 'Mar' }, { key: 'wed', label: 'Mer' },
+        { key: 'thu', label: 'Jeu' }, { key: 'fri', label: 'Ven' }, { key: 'sat', label: 'Sam' }, { key: 'sun', label: 'Dim' }
+      ];
+
+      const daysSelectorHtml = daysList.map(d => `
         <label class="flex flex-col items-center cursor-pointer">
           <input type="checkbox" value="${d.key}" checked class="day-checkbox rounded border-gray-700 bg-gray-900 text-blue-600">
           <span class="text-[10px] text-gray-300 mt-1">${d.label}</span>
@@ -567,12 +645,12 @@
               <label class="block text-xs font-semibold text-gray-300 mb-1">Type de récurrence</label>
               <select id="m-task-onetime" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
                 <option value="false">🔄 Récurrente</option>
-                <option value="true">📌 Jalon unique (Coché = Masqué)</option>
+                <option value="true">📌 Jalon unique</option>
               </select>
             </div>
           </div>
           <div>
-            <label class="block text-xs font-semibold text-gray-300 mb-1">Date d'échéance / Délai de fin (Optionnel)</label>
+            <label class="block text-xs font-semibold text-gray-300 mb-1">Date d'échéance (Optionnel)</label>
             <input type="date" id="m-task-duedate" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white">
           </div>
           <div>
@@ -595,7 +673,7 @@
       const dueDate = document.getElementById('m-task-duedate').value;
       const selectedDays = Array.from(document.querySelectorAll('.day-checkbox:checked')).map(cb => cb.value);
 
-      if (title) {
+      if (title && typeof addStandaloneTask === 'function') {
         await addStandaloneTask(title, points, groupId, selectedDays, dueDate, goalId, isOneTime);
         closeModal();
         renderUI();
@@ -604,7 +682,7 @@
 
     function openCreateGoalModal() {
       const st = loadState();
-      const groupOptions = st.groups.map(g => `<option value="${g.id}">${g.icon} ${g.name}</option>`).join('');
+      const groupOptions = (st.groups || []).map(g => `<option value="${g.id}">${g.icon || ''} ${g.name}</option>`).join('');
 
       const html = `
         <form onsubmit="handleCreateGoalSubmit(event)" class="space-y-4">
@@ -667,7 +745,7 @@
       const taskTitle = document.getElementById('m-goal-task-title').value.trim();
       const taskDueDate = document.getElementById('m-goal-task-duedate').value;
 
-      if (title) {
+      if (title && typeof addGoal === 'function') {
         await addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, 20, taskDueDate);
         closeModal();
         renderUI();
@@ -676,11 +754,11 @@
 
     function openEditGoalModal(goalId) {
       const st = loadState();
-      const goal = st.goals.find(g => g.id === goalId);
+      const goal = (st.goals || []).find(g => g.id === goalId);
       if (!goal) return;
 
-      const groupOptions = st.groups.map(g => `
-        <option value="${g.id}" ${g.id === goal.groupId ? 'selected' : ''}>${g.icon} ${g.name}</option>
+      const groupOptions = (st.groups || []).map(g => `
+        <option value="${g.id}" ${g.id === goal.groupId ? 'selected' : ''}>${g.icon || ''} ${g.name}</option>
       `).join('');
 
       const html = `
@@ -733,7 +811,7 @@
       const targetAmount = document.getElementById('m-edit-goal-target').value;
       const dueDate = document.getElementById('m-edit-goal-duedate').value;
 
-      if (title) {
+      if (title && typeof updateGoal === 'function') {
         await updateGoal(goalId, title, groupId, type, targetAmount, dueDate);
         closeModal();
         renderUI();
@@ -742,9 +820,9 @@
 
     function openWeightModal() {
       const st = loadState();
-      const rows = st.groups.map(g => `
+      const rows = (st.groups || []).map(g => `
         <div class="flex items-center justify-between bg-gray-900 p-2.5 rounded border border-gray-700">
-          <span class="text-xs text-white font-medium">${g.icon} ${g.name}</span>
+          <span class="text-xs text-white font-medium">${g.icon || ''} ${g.name}</span>
           <select onchange="updateGroupWeight('${g.id}', this.value)" class="bg-gray-800 text-white text-xs px-2 py-1 rounded border border-gray-700">
             <option value="1" ${g.weight == 1 ? 'selected' : ''}>×1 (Normal)</option>
             <option value="2" ${g.weight == 2 ? 'selected' : ''}>×2 (Important)</option>
