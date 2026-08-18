@@ -1,5 +1,5 @@
 /**
- * ENGINE.JS - Version Directe Sans Authentification
+ * ENGINE.JS - Gestion avancée des tâches, délais, et verrouillage d'édition des objectifs
  */
 
 const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
@@ -17,7 +17,7 @@ const DAYS_MAP = [
   { key: 'SUN', label: 'D' }
 ];
 
-let selectedHistoryDate = null; // null = Toujours la date système du jour
+let selectedHistoryDate = null;
 let lastKnownLocalDate = getLocalDateString();
 
 let globalState = {
@@ -27,7 +27,6 @@ let globalState = {
   logs: {}
 };
 
-// Fonction utilitaire pour obtenir la date locale exacte au format YYYY-MM-DD
 function getLocalDateString() {
   const d = new Date();
   const year = d.getFullYear();
@@ -36,18 +35,12 @@ function getLocalDateString() {
   return `${year}-${month}-${day}`;
 }
 
-// Initialisation directe sans Auth
 async function initApp() {
   await fetchStateFromSupabase();
-
-  // Détecteur de changement de jour (passé minuit ou reprise d'activité)
   setInterval(checkDayChange, 30000);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      checkDayChange();
-    }
+    if (document.visibilityState === 'visible') checkDayChange();
   });
-
   renderUI();
 }
 
@@ -67,43 +60,32 @@ function loadState() {
   return globalState;
 }
 
-// Chargement complet des données depuis Supabase
+// Chargement Supabase
 async function fetchStateFromSupabase() {
   try {
-    const [gRes, tRes, goalRes, sgRes, lRes] = await Promise.all([
+    const [gRes, tRes, goalRes, lRes] = await Promise.all([
       _supabase.from('groups').select('*'),
       _supabase.from('tasks').select('*'),
       _supabase.from('goals').select('*'),
-      _supabase.from('sub_goals').select('*'),
       _supabase.from('logs').select('*')
     ]);
-
-    if (gRes.data && gRes.data.length === 0) {
-      await seedInitialData();
-      return await fetchStateFromSupabase();
-    }
 
     const groups = gRes.data || [];
     const tasks = tRes.data || [];
     const goalsRaw = goalRes.data || [];
-    const subGoalsRaw = sgRes.data || [];
     const logsRaw = lRes.data || [];
 
-    const goals = goalsRaw.map(g => {
-      if (g.type === 'SCALE') {
-        const subGoals = subGoalsRaw
-          .filter(sg => sg.goal_id === g.id)
-          .map(sg => ({
-            id: sg.id,
-            title: sg.title,
-            taskIds: tasks.filter(t => t.sub_goal_id === sg.id).map(t => t.id)
-          }));
-        return { id: g.id, title: g.title, type: g.type, groupId: g.group_id, subGoals };
-      } else {
-        const directTaskIds = tasks.filter(t => t.goal_id === g.id && !t.sub_goal_id).map(t => t.id);
-        return { id: g.id, title: g.title, type: g.type, groupId: g.group_id, directTaskIds };
-      }
-    });
+    const goals = goalsRaw.map(g => ({
+      id: g.id,
+      title: g.title,
+      type: g.type || 'RECURRING',
+      groupId: g.group_id,
+      targetAmount: parseFloat(g.target_amount) || 0,
+      currentAmount: parseFloat(g.current_amount) || 0,
+      startDate: g.start_date || getLocalDateString(),
+      dueDate: g.due_date || null,
+      isCollapsed: true
+    }));
 
     const logs = {};
     logsRaw.forEach(l => {
@@ -116,7 +98,9 @@ async function fetchStateFromSupabase() {
       title: t.title,
       points: t.points,
       groupId: t.group_id,
-      goalId: t.goal_id,
+      goalId: t.goal_id || null,
+      dueDate: t.due_date || null,
+      isOneTime: !!t.is_one_time,
       days: Array.isArray(t.days) ? t.days : JSON.parse(t.days || '[]')
     }));
 
@@ -124,18 +108,6 @@ async function fetchStateFromSupabase() {
   } catch (err) {
     console.error("Erreur de chargement Supabase :", err);
   }
-}
-
-async function seedInitialData() {
-  const gId = 'g_' + Date.now();
-  const goalId = 'goal_' + Date.now();
-  const sgId = 'sg_' + Date.now();
-  const tId = 't_' + Date.now();
-
-  await _supabase.from('groups').insert([{ id: gId, name: 'Carrière & Compétences', icon: '🚀', weight: 3 }]);
-  await _supabase.from('goals').insert([{ id: goalId, title: 'Mon Premier Objectif', type: 'SCALE', group_id: gId }]);
-  await _supabase.from('sub_goals').insert([{ id: sgId, goal_id: goalId, title: 'Étape 1' }]);
-  await _supabase.from('tasks').insert([{ id: tId, title: 'Ma première tâche', points: 30, group_id: gId, goal_id: goalId, sub_goal_id: sgId, days: ['MON', 'TUE', 'WED', 'THU', 'FRI'] }]);
 }
 
 function getTodayString() {
@@ -155,7 +127,6 @@ function getCurrentWeekDates() {
   const dateStr = getTodayString();
   const parts = dateStr.split('-');
   const curr = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-  
   const first = curr.getDate() - (curr.getDay() === 0 ? 6 : curr.getDay() - 1);
   const dates = [];
 
@@ -170,14 +141,29 @@ function getCurrentWeekDates() {
   return dates;
 }
 
+// Vérifier si une tâche a dépassé son délai
+function isTaskExpired(task, targetDate = getTodayString()) {
+  if (!task.dueDate) return false;
+  return targetDate > task.dueDate;
+}
+
+function isTaskCompletedEver(taskId, beforeDate = null) {
+  const st = loadState();
+  const dates = Object.keys(st.logs);
+
+  for (let d of dates) {
+    if (beforeDate && d > beforeDate) continue;
+    if (st.logs[d]?.[taskId]?.completed) return true;
+  }
+  return false;
+}
+
 function calculateGlobalScores(mode = 'daily') {
   const st = loadState();
   const datesToEvaluate = mode === 'daily' ? [getTodayString()] : getCurrentWeekDates();
 
-  let totalRawExpected = 0;
-  let totalRawEarned = 0;
-  let totalWeightedExpected = 0;
-  let totalWeightedEarned = 0;
+  let totalRawExpected = 0, totalRawEarned = 0;
+  let totalWeightedExpected = 0, totalWeightedEarned = 0;
 
   datesToEvaluate.forEach(dateStr => {
     const parts = dateStr.split('-');
@@ -187,6 +173,10 @@ function calculateGlobalScores(mode = 'daily') {
     const logs = st.logs[dateStr] || {};
 
     st.tasks.forEach(task => {
+      // Ignorer si la date limite de la tâche est dépassée
+      if (isTaskExpired(task, dateStr)) return;
+      if (task.isOneTime && isTaskCompletedEver(task.id, dateStr)) return;
+
       const isTaskActiveForDay = !task.days || task.days.length === 0 || task.days.includes(currentDayKey);
       if (!isTaskActiveForDay) return;
 
@@ -213,7 +203,63 @@ function calculateGlobalScores(mode = 'daily') {
   };
 }
 
-// BASCULE DE COCHAGE DE TÂCHE
+function calculateGoalMetrics(goal) {
+  const st = loadState();
+  const goalTasks = st.tasks.filter(t => t.goalId === goal.id);
+
+  if (goal.type === 'FREE_CONTRIBUTE') {
+    const pct = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0;
+    return { realPct: pct, timePct: null };
+  }
+
+  if (goal.type === 'CHAPTERS') {
+    if (goalTasks.length === 0) return { realPct: 0, timePct: null };
+    let done = 0;
+    goalTasks.forEach(t => {
+      if (isTaskCompletedEver(t.id)) done++;
+    });
+    return { realPct: Math.round((done / goalTasks.length) * 100), timePct: null };
+  }
+
+  let completedCount = 0;
+  Object.keys(st.logs).forEach(dStr => {
+    goalTasks.forEach(t => {
+      if (st.logs[dStr]?.[t.id]?.completed) completedCount++;
+    });
+  });
+
+  let realPct = 0;
+  if (goal.targetAmount > 0) {
+    const valPerTask = goal.targetAmount / Math.max(1, goalTasks.length * 30);
+    realPct = Math.min(100, Math.round(((completedCount * valPerTask) / goal.targetAmount) * 100));
+  } else {
+    realPct = goalTasks.length > 0 ? Math.min(100, Math.round((completedCount / (goalTasks.length * 30)) * 100)) : 0;
+  }
+
+  let timePct = null;
+  if (goal.type === 'TIMED' && goal.startDate && goal.dueDate) {
+    const start = new Date(goal.startDate).getTime();
+    const end = new Date(goal.dueDate).getTime();
+    const now = new Date(getLocalDateString()).getTime();
+
+    if (end > start) {
+      const totalDuration = end - start;
+      const elapsed = Math.max(0, now - start);
+      timePct = Math.min(100, Math.round((elapsed / totalDuration) * 100));
+    }
+  }
+
+  return { realPct, timePct };
+}
+
+function toggleGoalAccordion(goalId) {
+  const goal = globalState.goals.find(g => g.id === goalId);
+  if (goal) {
+    goal.isCollapsed = !goal.isCollapsed;
+    renderUI();
+  }
+}
+
 async function toggleTaskLog(taskId, dateStr = getTodayString()) {
   const st = loadState();
   if (!st.logs[dateStr]) st.logs[dateStr] = {};
@@ -227,26 +273,136 @@ async function toggleTaskLog(taskId, dateStr = getTodayString()) {
   } else {
     const pts = parseInt(task.points) || 10;
     st.logs[dateStr][taskId] = { completed: true, points: pts };
-    await _supabase.from('logs').upsert({ 
-      date_str: dateStr, 
-      task_id: taskId, 
-      points: pts, 
-      completed: true 
-    }, { onConflict: 'date_str,task_id' });
+    await _supabase.from('logs').upsert({ date_str: dateStr, task_id: taskId, points: pts, completed: true }, { onConflict: 'date_str,task_id' });
   }
 }
 
-// GESTION DES GROUPES
+// CRUD TÂCHES
+async function addStandaloneTask(title, points, groupId, daysArray, dueDate = null, goalId = null, isOneTime = false) {
+  const id = 'task_' + Date.now();
+  const days = daysArray || ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const pts = parseInt(points) || 10;
+
+  globalState.tasks.push({ id, title, points: pts, groupId, days, dueDate: dueDate || null, goalId, isOneTime });
+  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days, due_date: dueDate || null, goal_id: goalId, is_one_time: isOneTime }]);
+}
+
+async function updateTask(taskId, newTitle, newPoints, newGroupId, newDays, newDueDate, newIsOneTime) {
+  const pts = parseInt(newPoints) || 10;
+  const task = globalState.tasks.find(t => t.id === taskId);
+  
+  if (task) {
+    // Interdiction de modifier une tâche d'objectif depuis la liste indépendante
+    if (task.goalId) {
+      alert("Cette tâche appartient à un objectif. Veuillez la modifier depuis l'onglet Objectifs.");
+      return;
+    }
+
+    task.title = newTitle;
+    task.points = pts;
+    task.groupId = newGroupId;
+    task.days = newDays;
+    task.dueDate = newDueDate || null;
+    task.isOneTime = newIsOneTime;
+  }
+
+  await _supabase.from('tasks').update({
+    title: newTitle,
+    points: pts,
+    group_id: newGroupId,
+    days: newDays,
+    due_date: newDueDate || null,
+    is_one_time: newIsOneTime
+  }).eq('id', taskId);
+}
+
+async function deleteTask(taskId) {
+  globalState.tasks = globalState.tasks.filter(t => t.id !== taskId);
+  await _supabase.from('tasks').delete().eq('id', taskId);
+}
+
+// CRUD OBJECTIFS
+async function addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, taskPoints) {
+  const goalId = 'goal_' + Date.now();
+  const startDate = getLocalDateString();
+  const target = parseFloat(targetAmount) || 0;
+
+  const newGoal = {
+    id: goalId,
+    title,
+    type,
+    groupId,
+    targetAmount: target,
+    currentAmount: 0,
+    startDate,
+    dueDate: dueDate || null,
+    isCollapsed: false
+  };
+
+  globalState.goals.push(newGoal);
+  await _supabase.from('goals').insert([{
+    id: goalId,
+    title,
+    type,
+    group_id: groupId,
+    target_amount: target,
+    current_amount: 0,
+    start_date: startDate,
+    due_date: dueDate || null
+  }]);
+
+  if (taskTitle && type !== 'FREE_CONTRIBUTE') {
+    const isOneTime = type === 'CHAPTERS';
+    await addStandaloneTask(taskTitle, taskPoints || 20, groupId, ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'], dueDate, goalId, isOneTime);
+  }
+}
+
+async function updateGoal(goalId, newTitle, newGroupId, newType, newTargetAmount, newDueDate) {
+  const goal = globalState.goals.find(g => g.id === goalId);
+  if (!goal) return;
+
+  const oldGroupId = goal.groupId;
+  goal.title = newTitle;
+  goal.groupId = newGroupId;
+  goal.type = newType;
+  goal.targetAmount = parseFloat(newTargetAmount) || 0;
+  goal.dueDate = newDueDate || null;
+
+  await _supabase.from('goals').update({
+    title: newTitle,
+    group_id: newGroupId,
+    type: newType,
+    target_amount: parseFloat(newTargetAmount) || 0,
+    due_date: newDueDate || null
+  }).eq('id', goalId);
+
+  if (oldGroupId !== newGroupId) {
+    globalState.tasks.forEach(t => {
+      if (t.goalId === goalId) {
+        t.groupId = newGroupId;
+      }
+    });
+    await _supabase.from('tasks').update({ group_id: newGroupId }).eq('goal_id', goalId);
+  }
+}
+
+async function deleteGoal(goalId) {
+  globalState.goals = globalState.goals.filter(g => g.id !== goalId);
+  globalState.tasks = globalState.tasks.filter(t => t.goalId !== goalId);
+  await _supabase.from('goals').delete().eq('id', goalId);
+}
+
+// GROUPES
 async function addGroup(name, icon, weight = 1) {
   const id = 'g_' + Date.now();
-  const newGroup = { id, name, icon: icon || '📁', weight: parseInt(weight) || 1 };
-  globalState.groups.push(newGroup);
+  globalState.groups.push({ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 });
   await _supabase.from('groups').insert([{ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 }]);
 }
 
 async function deleteGroup(groupId) {
   globalState.groups = globalState.groups.filter(g => g.id !== groupId);
   globalState.tasks = globalState.tasks.filter(t => t.groupId !== groupId);
+  globalState.goals = globalState.goals.filter(g => g.groupId !== groupId);
   await _supabase.from('groups').delete().eq('id', groupId);
 }
 
@@ -255,88 +411,4 @@ async function updateGroupWeight(groupId, newWeight) {
   const group = globalState.groups.find(g => g.id === groupId);
   if (group) group.weight = weight;
   await _supabase.from('groups').update({ weight }).eq('id', groupId);
-}
-
-// GESTION DES TÂCHES
-async function addStandaloneTask(title, points, groupId, daysArray) {
-  const id = 'task_' + Date.now();
-  const days = daysArray || ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-  const pts = parseInt(points) || 10;
-
-  globalState.tasks.push({ id, title, points: pts, groupId, days });
-  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days }]);
-}
-
-async function deleteTask(taskId) {
-  globalState.tasks = globalState.tasks.filter(t => t.id !== taskId);
-  globalState.goals.forEach(goal => {
-    if (goal.directTaskIds) goal.directTaskIds = goal.directTaskIds.filter(id => id !== taskId);
-    if (goal.subGoals) {
-      goal.subGoals.forEach(sg => sg.taskIds = sg.taskIds.filter(id => id !== taskId));
-    }
-  });
-  await _supabase.from('tasks').delete().eq('id', taskId);
-}
-
-async function updateTask(taskId, newTitle, newPoints, newDays) {
-  const pts = parseInt(newPoints) || 10;
-  const task = globalState.tasks.find(t => t.id === taskId);
-  if (task) {
-    task.title = newTitle;
-    task.points = pts;
-    task.days = newDays;
-  }
-  await _supabase.from('tasks').update({ title: newTitle, points: pts, days: newDays }).eq('id', taskId);
-}
-
-// GESTION DES OBJECTIFS
-async function addComplexGoal(title, type, groupId, structuredData) {
-  const goalId = 'goal_' + Date.now();
-  const newGoal = { id: goalId, title, type, groupId };
-
-  await _supabase.from('goals').insert([{ id: goalId, title, type, group_id: groupId }]);
-
-  if (type === 'SCALE') {
-    newGoal.subGoals = [];
-    for (let sIndex = 0; sIndex < structuredData.length; sIndex++) {
-      const sg = structuredData[sIndex];
-      const subGoalId = `sg_${goalId}_${sIndex}`;
-      await _supabase.from('sub_goals').insert([{ id: subGoalId, goal_id: goalId, title: sg.title }]);
-
-      const taskIds = [];
-      for (let tIndex = 0; tIndex < sg.tasks.length; tIndex++) {
-        const t = sg.tasks[tIndex];
-        const taskId = `t_${goalId}_${sIndex}_${tIndex}_${Date.now()}`;
-        const pts = parseInt(t.points) || 20;
-
-        globalState.tasks.push({ id: taskId, title: t.title, points: pts, groupId, days: t.days, goalId });
-        await _supabase.from('tasks').insert([{
-          id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, sub_goal_id: subGoalId, days: t.days
-        }]);
-        taskIds.push(taskId);
-      }
-      newGoal.subGoals.push({ id: subGoalId, title: sg.title, taskIds });
-    }
-  } else {
-    newGoal.directTaskIds = [];
-    for (let tIndex = 0; tIndex < structuredData[0].tasks.length; tIndex++) {
-      const t = structuredData[0].tasks[tIndex];
-      const taskId = `t_${goalId}_d_${tIndex}_${Date.now()}`;
-      const pts = parseInt(t.points) || 20;
-
-      globalState.tasks.push({ id: taskId, title: t.title, points: pts, groupId, days: t.days, goalId });
-      await _supabase.from('tasks').insert([{
-        id: taskId, title: t.title, points: pts, group_id: groupId, goal_id: goalId, days: t.days
-      }]);
-      newGoal.directTaskIds.push(taskId);
-    }
-  }
-
-  globalState.goals.push(newGoal);
-}
-
-async function deleteGoal(goalId) {
-  globalState.goals = globalState.goals.filter(g => g.id !== goalId);
-  globalState.tasks = globalState.tasks.filter(t => t.goalId !== goalId);
-  await _supabase.from('goals').delete().eq('id', goalId);
 }
