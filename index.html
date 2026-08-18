@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Habit Tracker - Gestion des Tâches & Délais</title>
+  <title>Habit Tracker - Suivi des Tâches</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -223,7 +223,7 @@
             <div class="bg-gray-900/90 p-2.5 rounded-lg border border-gray-700/60 hover:border-gray-600 transition space-y-1.5 group">
               <div class="flex items-center justify-between">
                 <label class="flex items-center space-x-2.5 cursor-pointer text-xs ${isDone ? 'line-through text-gray-500' : 'text-gray-200'}">
-                  <input type="checkbox" ${isDone ? 'checked' : ''} onchange="onToggleTask('${t.id}')" class="rounded border-gray-700 bg-gray-800 text-blue-600">
+                  <input type="checkbox" ${isDone ? 'checked' : ''} onclick="onToggleTask('${t.id}')" class="rounded border-gray-700 bg-gray-800 text-blue-600">
                   <span>${t.title} ${t.isOneTime ? '<span class="text-[9px] text-amber-400 border border-amber-800 bg-amber-950/40 px-1 rounded">Jalon</span>' : ''}</span>
                 </label>
                 <div class="flex items-center space-x-1.5">
@@ -416,7 +416,12 @@
       });
     }
 
-    async function onToggleTask(taskId, dateStr = getTodayString()) { await toggleTaskLog(taskId, dateStr); renderUI(); }
+    // GESTION ASYNCHRONE SECURISEE DU COCHAGE/DECOCHAGE
+    async function onToggleTask(taskId, dateStr = getTodayString()) {
+      await toggleTaskLog(taskId, dateStr);
+      renderUI();
+    }
+
     async function onDeleteTask(taskId) { await deleteTask(taskId); renderUI(); }
     async function onDeleteGroup(groupId) { if (confirm("Supprimer ce groupe ?")) { await deleteGroup(groupId); renderUI(); } }
     async function onDeleteGoal(goalId) { if (confirm("Supprimer cet objectif ?")) { await deleteGoal(goalId); renderUI(); } }
@@ -430,7 +435,6 @@
 
     function closeModal() { document.getElementById('modal-backdrop').classList.add('hidden'); }
 
-    // MODAL UNIQUE ET SANS ERREUR DE MODIFICATION DE TÂCHE
     function openEditTaskModal(taskId) {
       const st = loadState();
       const task = st.tasks.find(t => t.id === taskId);
@@ -587,7 +591,6 @@
       }
     }
 
-    // CREATION D'OBJECTIF
     function openCreateGoalModal() {
       const st = loadState();
       const groupOptions = st.groups.map(g => `<option value="${g.id}">${g.icon} ${g.name}</option>`).join('');
