@@ -1,5 +1,5 @@
 /**
- * ENGINE.JS - Gestion avancée des tâches, délais, et édition complète des tâches d'objectifs
+ * ENGINE.JS - Moteur de données avec gestion fluide des modifications de tâches d'objectifs
  */
 
 const SUPABASE_URL = 'https://fsmlbnhzlahvwyzuqmfn.supabase.co';
@@ -60,14 +60,6 @@ function loadState() {
   return globalState;
 }
 
-function saveStateToLocal() {
-  try {
-    localStorage.setItem('habit_app_data_v9', JSON.stringify(globalState));
-  } catch (e) {
-    console.warn("Impossible de sauvegarder dans le localStorage :", e);
-  }
-}
-
 // Chargement Supabase
 async function fetchStateFromSupabase() {
   try {
@@ -101,45 +93,21 @@ async function fetchStateFromSupabase() {
       logs[l.date_str][l.task_id] = { completed: l.completed, points: l.points };
     });
 
-    const formattedTasks = tasks.map(t => {
-      let parsedDays = [];
-      if (Array.isArray(t.days)) {
-        parsedDays = t.days;
-      } else if (typeof t.days === 'string') {
-        try {
-          parsedDays = JSON.parse(t.days);
-        } catch (e) {
-          parsedDays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-        }
-      } else {
-        parsedDays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-      }
-
-      return {
-        id: t.id,
-        title: t.title,
-        points: t.points,
-        groupId: t.group_id,
-        goalId: t.goal_id || null,
-        dueDate: t.due_date || null,
-        isOneTime: !!t.is_one_time,
-        isFinished: !!t.is_finished,
-        days: parsedDays
-      };
-    });
+    const formattedTasks = tasks.map(t => ({
+      id: t.id,
+      title: t.title,
+      points: t.points,
+      groupId: t.group_id,
+      goalId: t.goal_id || null,
+      dueDate: t.due_date || null,
+      isOneTime: !!t.is_one_time,
+      isFinished: !!t.is_finished,
+      days: Array.isArray(t.days) ? t.days : JSON.parse(t.days || '[]')
+    }));
 
     globalState = { groups, tasks: formattedTasks, goals, logs };
-    saveStateToLocal();
   } catch (err) {
-    console.error("Erreur de chargement Supabase, tentative depuis le LocalStorage :", err);
-    const saved = localStorage.getItem('habit_app_data_v9');
-    if (saved) {
-      try {
-        globalState = JSON.parse(saved);
-      } catch (e) {
-        console.error("Erreur de lecture du LocalStorage :", e);
-      }
-    }
+    console.error("Erreur de chargement Supabase :", err);
   }
 }
 
@@ -231,7 +199,7 @@ function calculateGlobalScores(mode = 'daily') {
 
   return {
     raw: { earned: totalRawEarned, expected: totalRawExpected, pct: rawPct },
-    weighted: { earned: totalWeightedEarned, expected: totalWeightedEarned, pct: weightedPct }
+    weighted: { earned: totalWeightedEarned, expected: totalWeightedExpected, pct: weightedPct }
   };
 }
 
@@ -301,12 +269,10 @@ async function toggleTaskLog(taskId, dateStr = getTodayString()) {
 
   if (st.logs[dateStr][taskId]?.completed) {
     delete st.logs[dateStr][taskId];
-    saveStateToLocal();
     await _supabase.from('logs').delete().eq('date_str', dateStr).eq('task_id', taskId);
   } else {
     const pts = parseInt(task.points) || 10;
     st.logs[dateStr][taskId] = { completed: true, points: pts };
-    saveStateToLocal();
     await _supabase.from('logs').upsert({ date_str: dateStr, task_id: taskId, points: pts, completed: true }, { onConflict: 'date_str,task_id' });
   }
 }
@@ -315,75 +281,45 @@ async function finishTaskPermanently(taskId) {
   const task = globalState.tasks.find(t => t.id === taskId);
   if (task) {
     task.isFinished = true;
-    saveStateToLocal();
     await _supabase.from('tasks').update({ is_finished: true }).eq('id', taskId);
   }
 }
 
-// CRUD TÂCHES
+// CRUD TÂCHES (Gestion unifiée sans blocage)
 async function addStandaloneTask(title, points, groupId, daysArray, dueDate = null, goalId = null, isOneTime = false) {
   const id = 'task_' + Date.now();
-  const days = Array.isArray(daysArray) && daysArray.length > 0 ? daysArray : ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const days = daysArray || ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
   const pts = parseInt(points) || 10;
 
   globalState.tasks.push({ id, title, points: pts, groupId, days, dueDate: dueDate || null, goalId, isOneTime, isFinished: false });
-  saveStateToLocal();
-
-  try {
-    await _supabase.from('tasks').insert([{
-      id,
-      title,
-      points: pts,
-      group_id: groupId,
-      days: days,
-      due_date: dueDate || null,
-      goal_id: goalId,
-      is_one_time: isOneTime,
-      is_finished: false
-    }]);
-  } catch (err) {
-    console.error("Erreur lors de l'insertion Supabase :", err);
-  }
+  await _supabase.from('tasks').insert([{ id, title, points: pts, group_id: groupId, days, due_date: dueDate || null, goal_id: goalId, is_one_time: isOneTime, is_finished: false }]);
 }
 
 async function updateTask(taskId, newTitle, newPoints, newGroupId, newDays, newDueDate, newIsOneTime) {
   const pts = parseInt(newPoints) || 10;
   const task = globalState.tasks.find(t => t.id === taskId);
   
-  const daysFormatted = Array.isArray(newDays) && newDays.length > 0 ? newDays : ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-
   if (task) {
     task.title = newTitle;
     task.points = pts;
     task.groupId = newGroupId;
-    task.days = daysFormatted;
+    task.days = newDays;
     task.dueDate = newDueDate || null;
-    task.isOneTime = !!newIsOneTime;
+    task.isOneTime = newIsOneTime;
   }
 
-  saveStateToLocal();
-
-  try {
-    const { error } = await _supabase.from('tasks').update({
-      title: newTitle,
-      points: pts,
-      group_id: newGroupId,
-      days: daysFormatted,
-      due_date: newDueDate || null,
-      is_one_time: !!newIsOneTime
-    }).eq('id', taskId);
-
-    if (error) {
-      console.error("Erreur Supabase à la mise à jour de la tâche :", error.message);
-    }
-  } catch (err) {
-    console.error("Erreur réseau/Supabase lors de la mise à jour :", err);
-  }
+  await _supabase.from('tasks').update({
+    title: newTitle,
+    points: pts,
+    group_id: newGroupId,
+    days: newDays,
+    due_date: newDueDate || null,
+    is_one_time: newIsOneTime
+  }).eq('id', taskId);
 }
 
 async function deleteTask(taskId) {
   globalState.tasks = globalState.tasks.filter(t => t.id !== taskId);
-  saveStateToLocal();
   await _supabase.from('tasks').delete().eq('id', taskId);
 }
 
@@ -406,8 +342,6 @@ async function addGoal(title, type, groupId, targetAmount, dueDate, taskTitle, t
   };
 
   globalState.goals.push(newGoal);
-  saveStateToLocal();
-
   await _supabase.from('goals').insert([{
     id: goalId,
     title,
@@ -437,8 +371,6 @@ async function updateGoal(goalId, newTitle, newGroupId, newType, newTargetAmount
   goal.targetAmount = parseFloat(newTargetAmount) || 0;
   goal.dueDate = newDueDate || null;
 
-  saveStateToLocal();
-
   await _supabase.from('goals').update({
     title: newTitle,
     group_id: newGroupId,
@@ -453,7 +385,6 @@ async function updateGoal(goalId, newTitle, newGroupId, newType, newTargetAmount
         t.groupId = newGroupId;
       }
     });
-    saveStateToLocal();
     await _supabase.from('tasks').update({ group_id: newGroupId }).eq('goal_id', goalId);
   }
 }
@@ -461,7 +392,6 @@ async function updateGoal(goalId, newTitle, newGroupId, newType, newTargetAmount
 async function deleteGoal(goalId) {
   globalState.goals = globalState.goals.filter(g => g.id !== goalId);
   globalState.tasks = globalState.tasks.filter(t => t.goalId !== goalId);
-  saveStateToLocal();
   await _supabase.from('goals').delete().eq('id', goalId);
 }
 
@@ -469,7 +399,6 @@ async function deleteGoal(goalId) {
 async function addGroup(name, icon, weight = 1) {
   const id = 'g_' + Date.now();
   globalState.groups.push({ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 });
-  saveStateToLocal();
   await _supabase.from('groups').insert([{ id, name, icon: icon || '📁', weight: parseInt(weight) || 1 }]);
 }
 
@@ -477,7 +406,6 @@ async function deleteGroup(groupId) {
   globalState.groups = globalState.groups.filter(g => g.id !== groupId);
   globalState.tasks = globalState.tasks.filter(t => t.groupId !== groupId);
   globalState.goals = globalState.goals.filter(g => g.groupId !== groupId);
-  saveStateToLocal();
   await _supabase.from('groups').delete().eq('id', groupId);
 }
 
@@ -485,6 +413,5 @@ async function updateGroupWeight(groupId, newWeight) {
   const weight = Math.max(1, parseInt(newWeight) || 1);
   const group = globalState.groups.find(g => g.id === groupId);
   if (group) group.weight = weight;
-  saveStateToLocal();
   await _supabase.from('groups').update({ weight }).eq('id', groupId);
 }
